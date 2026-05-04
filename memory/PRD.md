@@ -52,9 +52,18 @@ ABA therapy center staff portal — replace existing Claude/Base44-built portal 
   - Admin gets low-hours alert (≤4h remaining or exhausted package)
   - Admin gets schedule cancellation alert when state set to cancel_therapist or cancel_child
 
+### v5 — Schedule xlsx Import + Duplicate Week + Sheet Preview + Logo
+- ✅ **Schedule Excel import**: parses user's actual `Therapists' Schedule.xlsx` format (header row → 5 day rows with 10 time slots), auto-detects therapists, service codes (SS/HS/OS/Meeting/Supervision/Observation/AVC/Leave/Break), child names after `|` or `W/`, custom times in `(...)`. Tested: imported 4,748 cells from real file.
+- ✅ **Duplicate Week button** (gold, top right of Schedule): copies entire week's cells to any target date (default = next Sunday). Optional clear-target. Tested: 4,748 cells copied in <2s.
+- ✅ **Cancellation colors swapped per user**: Therapist cancellation = YELLOW 🟡, Client cancellation = PINK 🩷
+- ✅ **Re-added Najla & Walaa** (back to 15 therapists)
+- ✅ **Co-therapist dropdown** in Log Session: chosen therapists shown as colored pills with × to remove; dropdown to add more
+- ✅ **Attendance Sheet Preview** matching user's xlsx exactly: header (Logo + Boost Growth title + CLOSED/OPEN status with closure date), patient info row (Name, File NO., # Paid Sessions, 24H Days), table grouped by day-of-week (Sunday→Thursday) with rowSpan day labels, columns: Date, Status, Time, # of Hrs, Therapist, Note. Footer: Total Delivered, Total No-Show, Total Counted, Hours Remaining. Print-ready PDF.
+- ✅ **Brand logo integrated**: replaces Leaf/Plant icons in Login hero, Home hero, Top nav, and Attendance Sheet header. Logo PNG from user (`bg-logo.png`) loaded as floating decoration.
+
 ### Test Status
-- v4 backend: **43/43 pytest pass (100%)**
-- Frontend admin flows verified visually (Reports, Import, Schedule, Attendance)
+- v5 backend: 43/43 pytest pass + new endpoints tested manually (schedule-excel import, duplicate-week)
+- Frontend visually verified: login + home + schedule + duplicate week button + legend colors
 
 ## Test Credentials
 - Admin: `admin@boost-growthsa.com` / `BoostAdmin@2026`

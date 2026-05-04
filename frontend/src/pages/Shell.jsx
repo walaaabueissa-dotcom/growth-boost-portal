@@ -48,8 +48,8 @@ export default function Shell() {
         <div className="max-w-[1600px] mx-auto px-4 lg:px-6">
           <div className="h-16 flex items-center gap-4">
             <NavLink to="/home" className="flex items-center gap-2.5 shrink-0">
-              <div className="w-10 h-10 rounded-xl bg-[#7A8A6A] flex items-center justify-center">
-                <Plant size={22} weight="duotone" color="#FAF0D1" />
+              <div className="w-10 h-10 rounded-xl bg-[#7A8A6A] flex items-center justify-center p-1.5">
+                <img src="/bg-logo.png" alt="BG" className="w-full h-full object-contain"/>
               </div>
               <div className="hidden sm:block">
                 <div className="text-[15px] font-bold leading-tight" style={{color: "#2C3625"}}>BOOST GROWTH</div>

@@ -26,6 +26,11 @@
     --yellow-cancel-border: #E8C572;
 }
 
+/* Cancellation colors:
+   - Child cancellation = PINK (per user 2026-05)
+   - Therapist cancellation = YELLOW
+*/
+
 * { box-sizing: border-box; }
 html, body {
     font-family: 'DM Sans', 'Inter', system-ui, sans-serif;
@@ -149,22 +154,22 @@ html, body {
 .evt-leave   { background: #ECECEC; border-color: #B0B0B0; color: #555; font-style: italic; }
 .evt-break   { background: #F5F5DC; border-color: #C9C09A; color: #6B6038; font-style: italic; }
 .cell-cancel-therapist {
-    background: var(--pink-cancel) !important;
-    border-color: var(--pink-cancel-border) !important;
-    color: #8B3A55 !important;
-}
-.cell-cancel-therapist::after {
-    content: '✕'; position: absolute; top: 4px; right: 6px;
-    color: #8B3A55; font-weight: 800; font-size: 0.8rem;
-}
-.cell-cancel-child {
     background: var(--yellow-cancel) !important;
     border-color: var(--yellow-cancel-border) !important;
     color: #6B5218 !important;
 }
-.cell-cancel-child::after {
+.cell-cancel-therapist::after {
     content: '✕'; position: absolute; top: 4px; right: 6px;
     color: #8B6918; font-weight: 800; font-size: 0.8rem;
+}
+.cell-cancel-child {
+    background: var(--pink-cancel) !important;
+    border-color: var(--pink-cancel-border) !important;
+    color: #8B3A55 !important;
+}
+.cell-cancel-child::after {
+    content: '✕'; position: absolute; top: 4px; right: 6px;
+    color: #8B3A55; font-weight: 800; font-size: 0.8rem;
 }
 
 /* Top nav */

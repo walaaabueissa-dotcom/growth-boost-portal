@@ -3,12 +3,13 @@ import api from "../api";
 import { UploadSimple, Download, CheckCircle, X, FileXls, CalendarBlank, UserList } from "@phosphor-icons/react";
 
 export default function ImportPage() {
-  const [type, setType] = useState("clients"); // clients, intake, historical
+  const [type, setType] = useState("clients"); // clients, intake, historical, schedule
   const [file, setFile] = useState(null);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [historicalWeeks, setHistoricalWeeks] = useState([]);
   const [clearExisting, setClearExisting] = useState(false);
+  const [scheduleWeekStart, setScheduleWeekStart] = useState(new Date().toISOString().slice(0,10));
 
   useEffect(() => {
     api.get("/import/historical-weeks").then(({ data }) => setHistoricalWeeks(data.weeks)).catch(() => {});
@@ -19,8 +20,16 @@ export default function ImportPage() {
     setLoading(true); setResult(null);
     try {
       const fd = new FormData(); fd.append("file", file);
-      const { data } = await api.post(`/import/${type}`, fd, { headers: {"Content-Type": "multipart/form-data"}});
-      setResult({ ok: true, msg: `${data.created} created, ${data.skipped} skipped` });
+      let endpoint = `/import/${type}`;
+      if (type === "schedule") {
+        fd.append("week_start", scheduleWeekStart);
+        if (clearExisting) fd.append("clear_existing", "true");
+      }
+      const { data } = await api.post(endpoint, fd, { headers: {"Content-Type": "multipart/form-data"}});
+      const msg = type === "schedule"
+        ? `${data.cells_inserted} cells inserted for week ${data.week_start}`
+        : `${data.created} created, ${data.skipped} skipped`;
+      setResult({ ok: true, msg });
       setFile(null);
     } catch (e) { setResult({ ok: false, msg: e.response?.data?.detail || e.message }); }
     setLoading(false);
@@ -43,11 +52,12 @@ export default function ImportPage() {
         <div className="text-sm" style={{color: "#5C6853"}}>Bulk-import clients, intake records, or historical schedules</div>
       </div>
 
-      <div className="grid md:grid-cols-3 gap-3 mb-5">
+      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         {[
           { id: "clients", label: "Clients", desc: "Excel/CSV with name, file_no, package_hours, etc.", icon: <UserList size={26} weight="duotone"/>, color: "#7A8A6A", bg: "#E5EBE1" },
           { id: "intake", label: "Intake", desc: "Pre/Post intake list (Excel/CSV)", icon: <FileXls size={26} weight="duotone"/>, color: "#D4A64A", bg: "#FAF0D1" },
-          { id: "historical", label: "Historical Schedules", desc: `${historicalWeeks.length} weeks ready from Base44`, icon: <CalendarBlank size={26} weight="duotone"/>, color: "#375568", bg: "#EAF0F3" },
+          { id: "schedule", label: "Schedule (xlsx)", desc: "Therapists' Schedule Excel file", icon: <CalendarBlank size={26} weight="duotone"/>, color: "#8B3A55", bg: "#FCE0E8" },
+          { id: "historical", label: "Historical", desc: `${historicalWeeks.length} weeks ready from Base44`, icon: <CalendarBlank size={26} weight="duotone"/>, color: "#375568", bg: "#EAF0F3" },
         ].map(x => (
           <button key={x.id} onClick={() => { setType(x.id); setResult(null); }}
                   className={`card p-5 text-left transition-all ${type === x.id ? "ring-2 ring-[#7A8A6A]" : ""}`}>
@@ -59,7 +69,28 @@ export default function ImportPage() {
       </div>
 
       <div className="card p-6">
-        {type !== "historical" ? (
+        {type === "schedule" ? (
+          <div>
+            <div className="font-bold mb-3" style={{color: "#2C3625"}}>Upload Therapists' Schedule (.xlsx)</div>
+            <div className="text-xs mb-4 p-3 rounded-xl border border-[#E8E4DE]" style={{background: "#FAFAF7", color: "#5C6853"}}>
+              The file must contain therapist names (e.g. "Ms. Maha") followed by Sunday-Thursday rows with 10 time-slot columns.
+              Cell content like <code>SS | Sulaiman</code>, <code>HS | Omar</code>, <code>Meeting w/ Walaa</code>, <code>AVC</code>, <code>Supervision W/ Khalid</code> will be auto-parsed.
+            </div>
+            <label className="label">Target Week Start (Sunday)</label>
+            <input type="date" className="input mb-3" value={scheduleWeekStart} onChange={e => setScheduleWeekStart(e.target.value)}/>
+            <label className="btn btn-outline w-full justify-start cursor-pointer mb-3">
+              <UploadSimple size={18}/> {file ? file.name : "Choose Excel file..."}
+              <input type="file" accept=".xlsx,.xls" onChange={e => setFile(e.target.files[0])} className="hidden"/>
+            </label>
+            <label className="flex items-center gap-2 mb-4 text-sm cursor-pointer">
+              <input type="checkbox" checked={clearExisting} onChange={e => setClearExisting(e.target.checked)}/>
+              <span style={{color: "#5C6853"}}>Clear existing cells for this week first</span>
+            </label>
+            <button onClick={upload} disabled={!file || loading} className="btn btn-primary w-full disabled:opacity-50">
+              {loading ? <span className="spinner"/> : <><UploadSimple size={16}/> Import Schedule</>}
+            </button>
+          </div>
+        ) : type !== "historical" ? (
           <div>
             <div className="font-bold mb-3" style={{color: "#2C3625"}}>Upload {type === "clients" ? "Clients" : "Intake"} File</div>
             <div className="text-sm mb-3" style={{color: "#5C6853"}}>

@@ -38,11 +38,11 @@ export default function Login() {
   return (
     <div className="min-h-screen bg-organic flex flex-col">
       <div className="text-white py-14 px-6 relative overflow-hidden" style={{background: "linear-gradient(135deg, #7A8A6A 0%, #606E52 60%, #48543E 100%)"}}>
-        <Leaf size={300} weight="duotone" className="leaf-deco" style={{ top: "-40px", right: "-40px" }} />
-        <Plant size={260} weight="duotone" className="leaf-deco" style={{ bottom: "-60px", left: "-30px", animationDelay: "2s" }} />
+        <img src="/bg-logo.png" alt="" className="absolute opacity-10 pointer-events-none" style={{top: "-30px", right: "-30px", width: 280, animation: "leaf-float 8s ease-in-out infinite"}}/>
+        <img src="/bg-logo.png" alt="" className="absolute opacity-10 pointer-events-none" style={{bottom: "-50px", left: "-30px", width: 220, animation: "leaf-float 10s ease-in-out infinite", animationDelay: "2s"}}/>
         <div className="max-w-5xl mx-auto flex items-center gap-4 relative">
-          <div className="w-14 h-14 rounded-2xl bg-white/15 backdrop-blur flex items-center justify-center">
-            <Plant size={32} weight="duotone" color="#FAF0D1" />
+          <div className="w-14 h-14 rounded-2xl bg-white/15 backdrop-blur flex items-center justify-center p-2">
+            <img src="/bg-logo.png" alt="Boost Growth" className="w-full h-full object-contain"/>
           </div>
           <div className="flex-1">
             <div className="text-xs tracking-[0.3em] opacity-80 font-bold">STAFF PORTAL</div>

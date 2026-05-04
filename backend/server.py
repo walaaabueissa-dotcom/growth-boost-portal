@@ -790,6 +790,155 @@ async def import_historical(body: dict, _=Depends(admin_only)):
                     inserted += 1
     return {"weeks_loaded": weeks_loaded, "cells_inserted": inserted}
 
+@api.post("/schedule/duplicate-week")
+async def duplicate_week(body: dict, _=Depends(admin_only)):
+    """Copy all cells from source_week to target_week. body: {source_week, target_week, clear_target?}"""
+    source = body.get("source_week"); target = body.get("target_week")
+    if not source or not target:
+        raise HTTPException(status_code=400, detail="source_week and target_week required")
+    if body.get("clear_target"):
+        await db.schedule_cells.delete_many({"week_start": target})
+    cells = await db.schedule_cells.find({"week_start": source}, {"_id": 0}).to_list(5000)
+    inserted = 0
+    for c in cells:
+        new_c = {**c, "id": str(uuid.uuid4()), "week_start": target,
+                 "state": "normal", "created_at": now_iso()}
+        await db.schedule_cells.insert_one(new_c)
+        inserted += 1
+    return {"copied": inserted}
+
+@api.post("/import/schedule-excel")
+async def import_schedule_excel(file: UploadFile = File(...),
+                                 week_start: str = Form(...),
+                                 clear_existing: Optional[str] = Form(None),
+                                 _=Depends(admin_only)):
+    """Parse a Therapists' Schedule .xlsx file and create cells for the given week_start.
+    Expected layout: each sheet/section has a therapist name with rows for Sunday→Thursday
+    and 10 time-slot columns. Cell text format: 'SS | Child', 'HS | Child', 'Meeting w/ X', 'AVC', 'Leave', etc.
+    """
+    import openpyxl, io
+    content = await file.read()
+    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+    therapists = await db.therapists.find({}, {"_id": 0, "pin_hash": 0}).to_list(100)
+    t_by_name = {t["name"]: t["id"] for t in therapists}
+    # Also accept short names
+    for t in therapists:
+        short = t["name"].replace("Ms. ", "").strip()
+        t_by_name[short] = t["id"]
+        t_by_name[short.lower()] = t["id"]
+
+    DAYS_MAP = {"sunday": 0, "monday": 1, "tuesday": 2, "wednesday": 3, "thursday": 4}
+    TIMES = ["8:00 AM - 9:00 AM","9:00 AM - 10:00 AM","10:00 AM - 11:00 AM",
+             "11:00 AM - 12:00 PM","12:00 PM - 1:00 PM","1:00 PM - 2:00 PM",
+             "2:00 PM - 3:00 PM","3:00 PM - 4:00 PM","4:00 PM - 5:00 PM",
+             "5:00 PM - 6:00 PM"]
+
+    if clear_existing == "true":
+        await db.schedule_cells.delete_many({"week_start": week_start})
+
+    inserted = 0
+    skipped_unknown_therapist = []
+
+    def parse_cell(txt: str):
+        """Returns (service_code, child_name, custom_time, note) for a cell text."""
+        if not txt or not str(txt).strip():
+            return None
+        txt = str(txt).strip()
+        upper = txt.upper()
+        custom = None
+        note = None
+        child = None
+        service = "SS"
+        if "AVC" in upper: service = "AVC"; note = txt
+        elif "LEAVE" in upper: service = "LEAVE"; note = txt
+        elif "BREAK" in upper: service = "BREAK"; note = txt
+        elif "SUPERVISION" in upper: service = "SUPERVISION"
+        elif "OBSERVATION" in upper: service = "OBSERVATION"
+        elif "MEETING" in upper: service = "MEETING"
+        elif upper.startswith("HS"): service = "HS"
+        elif upper.startswith("OS"): service = "OS"
+        elif upper.startswith("SS"): service = "SS"
+        # Extract child after | or W/ or with
+        if "|" in txt:
+            child = txt.split("|", 1)[1].strip()
+        elif "W/" in upper:
+            idx = upper.index("W/")
+            child = txt[idx+2:].strip()
+        elif " with " in txt.lower():
+            child = txt.lower().split(" with ", 1)[1].strip().title()
+        # Extract custom time inside ( )
+        if child and "(" in child:
+            m_open = child.find("(")
+            m_close = child.find(")", m_open)
+            if m_close > m_open:
+                custom = child[m_open+1:m_close].strip()
+                child = child[:m_open].strip()
+        return service, child, custom, note
+
+    # Iterate all sheets
+    for ws in wb.worksheets:
+        rows = list(ws.iter_rows(values_only=True))
+        i = 0
+        while i < len(rows):
+            row = rows[i] or ()
+            cells = [str(c).strip() if c is not None else "" for c in row]
+            # Detect header row: contains "Therapist's Name" and "Days"
+            joined = " ".join(c.lower() for c in cells)
+            if "therapist" in joined and "days" in joined and "8:00" in joined:
+                # The next 5 rows should be: therapist_name | day | 10 slots
+                current_t_id = None
+                for k in range(1, 6):
+                    if i + k >= len(rows):
+                        break
+                    sub = rows[i + k] or ()
+                    sub_cells = [str(c).strip() if c is not None else "" for c in sub]
+                    if len(sub_cells) < 4:
+                        continue
+                    # Therapist name typically in col B (idx 1) on first sub-row
+                    name_candidate = sub_cells[1] if len(sub_cells) > 1 else ""
+                    if name_candidate and current_t_id is None:
+                        if name_candidate in t_by_name:
+                            current_t_id = t_by_name[name_candidate]
+                        else:
+                            for key, tid in t_by_name.items():
+                                if key.lower() == name_candidate.lower():
+                                    current_t_id = tid; break
+                    if current_t_id is None:
+                        # Skip if can't find therapist; but track for skipped
+                        if name_candidate and name_candidate not in skipped_unknown_therapist:
+                            skipped_unknown_therapist.append(name_candidate)
+                        continue
+                    # Day in col C (idx 2)
+                    day_label = sub_cells[2].lower() if len(sub_cells) > 2 else ""
+                    day_idx = DAYS_MAP.get(day_label)
+                    if day_idx is None:
+                        continue
+                    # Time slots in cols D-M (idx 3-12)
+                    for slot_idx in range(10):
+                        col_idx = 3 + slot_idx
+                        if col_idx >= len(sub_cells):
+                            break
+                        val = sub_cells[col_idx]
+                        parsed = parse_cell(val)
+                        if not parsed:
+                            continue
+                        service, child, custom, note = parsed
+                        await db.schedule_cells.insert_one({
+                            "id": str(uuid.uuid4()),
+                            "therapist_id": current_t_id,
+                            "day": day_idx, "time_slot": TIMES[slot_idx],
+                            "service_code": service, "child_name": child,
+                            "note": note, "custom_time": custom,
+                            "state": "normal", "color": None, "duration": 1,
+                            "week_start": week_start, "created_at": now_iso(),
+                        })
+                        inserted += 1
+                i += 6  # skip past header + 5 data rows
+                continue
+            i += 1
+
+    return {"cells_inserted": inserted, "week_start": week_start, "skipped_therapists": skipped_unknown_therapist[:20]}
+
 @api.get("/")
 async def root():
     return {"message": "Boost Growth Portal API", "status": "ok"}
@@ -814,6 +963,8 @@ THERAPIST_SEED = [
     {"name": "Ms. Fatimah", "color": "#6B9080", "email": "fatimah@boostgrowthsa.com"},
     {"name": "Ms. Shrooq", "color": "#D49A60", "email": "shrooq@boostgrowthsa.com"},
     {"name": "Ms. Abeer", "color": "#8B7BA8", "email": "abeer@boostgrowthsa.com"},
+    {"name": "Ms. Najla", "color": "#7BA890", "email": "najla@boostgrowthsa.com"},
+    {"name": "Ms. Walaa", "color": "#C28E6A", "email": "walaa@boostgrowthsa.com"},
 ]
 
 CLIENT_SEED = [

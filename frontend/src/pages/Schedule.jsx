@@ -4,13 +4,13 @@ import { getChildColor, readable } from "../childColors";
 import { useAuth } from "../auth";
 import {
   CaretLeft, CaretRight, Trash, Copy, BellRinging, X, House, MagnifyingGlass,
-  MagnifyingGlassPlus, MagnifyingGlassMinus, Printer, Info, GridFour, UsersThree
+  MagnifyingGlassPlus, MagnifyingGlassMinus, Printer, Info, GridFour, UsersThree, CopySimple
 } from "@phosphor-icons/react";
 
 const STATES = [
   { id: "normal", label: "Normal", swatch: "#E5EBE1" },
-  { id: "cancel_therapist", label: "Therapist Cancellation", swatch: "#FCE0E8" },
-  { id: "cancel_child", label: "Client Cancellation", swatch: "#FFF4C4" },
+  { id: "cancel_therapist", label: "Therapist Cancellation", swatch: "#FFF4C4" },
+  { id: "cancel_child", label: "Client Cancellation", swatch: "#FCE0E8" },
 ];
 
 function CellEvent({ cell, sc }) {
@@ -49,6 +49,16 @@ export default function Schedule() {
   const [ctxMenu, setCtxMenu] = useState(null);
   const [notify, setNotify] = useState(null);
   const [zoom, setZoom] = useState(100);
+  const [showDup, setShowDup] = useState(false);
+  const [dupTarget, setDupTarget] = useState(null);
+  const [dupClear, setDupClear] = useState(false);
+
+  const dupWeekToTarget = async () => {
+    if (!dupTarget) return;
+    await api.post("/schedule/duplicate-week", { source_week: weekStartISO, target_week: dupTarget, clear_target: dupClear });
+    setShowDup(false);
+    alert(`Week duplicated to ${dupTarget}. Navigate to that week to view.`);
+  };
 
   const weekStartISO = toISODate(weekStart);
 
@@ -263,13 +273,14 @@ export default function Schedule() {
           <div className="w-px h-6 bg-[#E8E4DE] mx-1"/>
           <button onClick={() => window.print()} className="btn btn-ghost p-2"><Printer size={16}/></button>
         </div>
+        {isAdmin && <button data-testid="duplicate-week-btn" onClick={() => { setDupTarget(toISODate(addDays(weekStart, 7))); setShowDup(true); }} className="btn btn-gold"><CopySimple size={16}/> Duplicate Week →</button>}
       </div>
 
       <div className="card p-3 mb-4 flex items-center flex-wrap gap-3 text-xs">
         <div className="font-bold flex items-center gap-1" style={{color: "#5C6853"}}><Info size={14}/> Legend:</div>
         {SERVICE_CODES.slice(0, 7).map(s => (<span key={s.id} className={`pill ${s.cls}`}>{s.short}</span>))}
-        <span className="pill" style={{background: "#FCE0E8", color: "#8B3A55", border: "1px solid #E8A4BD"}}>✕ Therapist Cancel</span>
-        <span className="pill" style={{background: "#FFF4C4", color: "#6B5218", border: "1px solid #E8C572"}}>✕ Client Cancel</span>
+        <span className="pill" style={{background: "#FFF4C4", color: "#6B5218", border: "1px solid #E8C572"}}>✕ Therapist Cancel (Yellow)</span>
+        <span className="pill" style={{background: "#FCE0E8", color: "#8B3A55", border: "1px solid #E8A4BD"}}>✕ Client Cancel (Pink)</span>
         <span className="ml-auto text-[11px]" style={{color: "#8B9E7A"}}>Each child has a unique color · {clients.length} clients</span>
       </div>
 
@@ -368,8 +379,8 @@ export default function Schedule() {
           <button onClick={() => { handleCellClick({stopPropagation: () => {}}, ctxMenu.cell.therapist_id, ctxMenu.cell.day, ctxMenu.cell.time_slot, ctxMenu.cell); setCtxMenu(null); }} className="btn btn-ghost w-full justify-start text-sm">Edit</button>
           <button onClick={() => { duplicate(ctxMenu.cell.id); setCtxMenu(null); }} className="btn btn-ghost w-full justify-start text-sm"><Copy size={14}/> Duplicate</button>
           <div className="divider my-1"/>
-          <button onClick={() => setState(ctxMenu.cell, "cancel_child")} className="btn btn-ghost w-full justify-start text-sm" style={{color: "#8B6918"}}>🟡 Mark Client Cancel</button>
-          <button onClick={() => setState(ctxMenu.cell, "cancel_therapist")} className="btn btn-ghost w-full justify-start text-sm" style={{color: "#8B3A55"}}>🩷 Mark Therapist Cancel</button>
+          <button onClick={() => setState(ctxMenu.cell, "cancel_child")} className="btn btn-ghost w-full justify-start text-sm" style={{color: "#8B3A55"}}>🩷 Mark Client Cancel</button>
+          <button onClick={() => setState(ctxMenu.cell, "cancel_therapist")} className="btn btn-ghost w-full justify-start text-sm" style={{color: "#8B6918"}}>🟡 Mark Therapist Cancel</button>
           <button onClick={() => setState(ctxMenu.cell, "normal")} className="btn btn-ghost w-full justify-start text-sm">✓ Mark Normal</button>
           <div className="divider my-1"/>
           <button onClick={() => { setNotify({ ...ctxMenu.cell, message: "" }); setCtxMenu(null); }} className="btn btn-ghost w-full justify-start text-sm"><BellRinging size={14}/> Notify Therapist</button>
@@ -387,6 +398,33 @@ export default function Schedule() {
             <div className="flex justify-end gap-2">
               <button onClick={() => setNotify(null)} className="btn btn-outline">Cancel</button>
               <button data-testid="notify-send-btn" onClick={sendNotify} className="btn btn-primary"><BellRinging size={16}/> Send</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate Week modal */}
+      {showDup && (
+        <div className="fixed inset-0 bg-black/40 modal-backdrop flex items-center justify-center p-4 z-50" onClick={() => setShowDup(false)}>
+          <div className="card p-6 w-full max-w-md modal-card" onClick={e=>e.stopPropagation()}>
+            <div className="font-display text-2xl mb-2">Duplicate Week</div>
+            <div className="text-sm mb-4" style={{color: "#5C6853"}}>
+              Copy <strong>{formatDateRange(weekStart)}</strong> to a target week (e.g., next week or any future date).
+            </div>
+            <label className="label">Target Week Start (Sunday)</label>
+            <input type="date" className="input mb-3" value={dupTarget || ""} onChange={e => setDupTarget(e.target.value)}/>
+            <div className="flex gap-2 mb-4">
+              <button type="button" onClick={() => setDupTarget(toISODate(addDays(weekStart, 7)))} className="btn btn-outline text-xs">Next week</button>
+              <button type="button" onClick={() => setDupTarget(toISODate(addDays(weekStart, 14)))} className="btn btn-outline text-xs">+2 weeks</button>
+              <button type="button" onClick={() => setDupTarget(toISODate(addDays(weekStart, 28)))} className="btn btn-outline text-xs">+4 weeks</button>
+            </div>
+            <label className="flex items-center gap-2 mb-4 text-sm cursor-pointer">
+              <input type="checkbox" checked={dupClear} onChange={e => setDupClear(e.target.checked)}/>
+              <span style={{color: "#5C6853"}}>Clear target week first (replace existing cells)</span>
+            </label>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowDup(false)} className="btn btn-outline">Cancel</button>
+              <button data-testid="dup-confirm-btn" onClick={dupWeekToTarget} disabled={!dupTarget} className="btn btn-primary disabled:opacity-50"><CopySimple size={16}/> Duplicate</button>
             </div>
           </div>
         </div>

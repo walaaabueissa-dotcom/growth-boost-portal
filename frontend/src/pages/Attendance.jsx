@@ -271,18 +271,24 @@ function LogSessionForm({ client, therapists, currentUser, onClose, onSaved, ses
           <Clock size={12} className="inline mr-1"/> Calculated: <strong>{computeHours(form.start_time, form.end_time)}h</strong>
         </div>
 
-        <label className="label">Therapist(s)</label>
-        <div className="flex flex-wrap gap-2 mb-3">
-          {therapists.map(t => {
-            const sel = form.therapist_ids.includes(t.id);
+        <label className="label">Therapist(s) {currentUser?.role === "therapist" && <span className="text-[10px] font-normal" style={{color: "#8B9E7A"}}>(your name added automatically)</span>}</label>
+        <div className="flex flex-wrap gap-2 mb-2">
+          {form.therapist_ids.map(id => {
+            const t = therapists.find(t => t.id === id);
+            if (!t) return null;
             return (
-              <button key={t.id} type="button" onClick={() => toggleT(t.id)}
-                      className={`pill px-3 py-1.5 text-xs transition ${sel ? "bg-[#7A8A6A] text-white border-[#7A8A6A]" : "bg-white border border-[#E8E4DE]"}`}>
-                {t.name}
-              </button>
+              <span key={id} className="pill px-3 py-1.5 text-xs" style={{background: t.color, color: "white"}}>
+                {t.name} <button type="button" onClick={() => toggleT(id)} className="ml-1 opacity-80 hover:opacity-100">✕</button>
+              </span>
             );
           })}
         </div>
+        <select className="select mb-3" value="" onChange={e => { if (e.target.value) toggleT(e.target.value); e.target.value = ""; }}>
+          <option value="">+ Add co-therapist...</option>
+          {therapists.filter(t => !form.therapist_ids.includes(t.id)).map(t => (
+            <option key={t.id} value={t.id}>{t.name}</option>
+          ))}
+        </select>
 
         <label className="label">Note (optional)</label>
         <textarea className="textarea mb-4" rows={3} value={form.note || ""} onChange={e=>setForm({...form, note: e.target.value})}/>
@@ -297,15 +303,25 @@ function LogSessionForm({ client, therapists, currentUser, onClose, onSaved, ses
 }
 
 function HistoryModal({ client, sessions, therapists, isAdmin, currentUserId, onClose, onEdit, onDeleted }) {
-  const [page, setPage] = useState(0);
+  const [closed, setClosed] = useState(false);
+  const [closureDate, setClosureDate] = useState("");
   const findT = id => therapists.find(t => t.id === id);
   const used = sessions.filter(s => s.status === "Completed").reduce((sum, s) => sum + (parseFloat(s.hours) || 0), 0);
   const pkg = client.package_hours || 24;
   const rem = Math.max(0, pkg - used);
+  const completed = sessions.filter(s => s.status === "Completed").length;
+  const noShows = sessions.filter(s => s.status === "No Show").length;
+  const counted = completed + noShows;
 
-  const PAGE_SIZE = 10;
-  const totalPages = Math.max(1, Math.ceil(sessions.length / PAGE_SIZE));
-  const pageSessions = sessions.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  // Group sessions by day-of-week
+  const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"];
+  const byDay = {};
+  DAYS.forEach(d => byDay[d] = []);
+  [...sessions].sort((a,b) => new Date(a.session_date) - new Date(b.session_date)).forEach(s => {
+    const d = new Date(s.session_date);
+    const dayName = d.toLocaleDateString('en-US', { weekday: 'long' });
+    if (byDay[dayName]) byDay[dayName].push(s);
+  });
 
   const removeSess = async (sid) => {
     if (!window.confirm("Delete this session?")) return;
@@ -313,95 +329,142 @@ function HistoryModal({ client, sessions, therapists, isAdmin, currentUserId, on
     onDeleted();
   };
 
+  const fmtDate = (d) => {
+    const dt = new Date(d);
+    return `${dt.getDate()}/${dt.getMonth()+1}/${dt.getFullYear()}`;
+  };
+
   return (
     <div className="fixed inset-0 bg-black/40 modal-backdrop flex items-center justify-center p-4 z-50" onClick={onClose}>
-      <div className="card p-0 w-full max-w-3xl modal-card max-h-[90vh] flex flex-col printable" onClick={e=>e.stopPropagation()}>
-        {/* Invoice header */}
-        <div className="p-6 border-b border-[#E8E4DE]" style={{background: `${client.color || "#E5EBE1"}30`}}>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="w-14 h-14 rounded-xl flex items-center justify-center text-2xl font-bold" style={{background: client.color || "#E5EBE1", color: "#2C3625"}}>{client.name.charAt(0)}</div>
-              <div>
-                <div className="text-xs font-bold tracking-[0.2em]" style={{color: "#8B9E7A"}}>INVOICE / ATTENDANCE SHEET</div>
-                <div className="font-display text-2xl" style={{color: "#2C3625"}}>{client.name}</div>
-                <div className="text-xs" style={{color: "#5C6853"}}>File #{client.file_no} · {client.locations?.[0]?.address}</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 no-print">
-              <button onClick={() => window.print()} className="btn btn-secondary text-xs"><Printer size={14}/> Print / PDF</button>
-              <button onClick={onClose} className="btn btn-ghost p-2"><X size={20}/></button>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-4 mt-4 text-sm">
-            <div className="bg-white rounded-xl p-3 border border-[#E8E4DE]">
-              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}>PACKAGE</div>
-              <div className="font-display text-xl" style={{color: "#2C3625"}}>{pkg}h</div>
-            </div>
-            <div className="bg-white rounded-xl p-3 border border-[#E8E4DE]">
-              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}>USED</div>
-              <div className="font-display text-xl" style={{color: "#7A8A6A"}}>{used.toFixed(1)}h</div>
-            </div>
-            <div className="bg-white rounded-xl p-3 border border-[#E8E4DE]">
-              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}>REMAINING</div>
-              <div className="font-display text-xl" style={{color: rem <= 4 ? "#C97B5C" : "#3D4F35"}}>{rem}h</div>
-            </div>
+      <div className="card p-0 w-full max-w-5xl modal-card max-h-[92vh] flex flex-col printable" onClick={e=>e.stopPropagation()}>
+        {/* Action bar */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-[#E8E4DE] no-print">
+          <div className="font-bold text-sm" style={{color: "#2C3625"}}>Attendance Sheet · {client.name}</div>
+          <div className="flex gap-2">
+            <button onClick={() => window.print()} className="btn btn-secondary text-xs"><Printer size={14}/> Print / Save PDF</button>
+            <button onClick={onClose} className="btn btn-ghost p-2"><X size={20}/></button>
           </div>
         </div>
 
-        {/* Sessions table */}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 overflow-y-auto bg-white">
+          {/* Logo + Title */}
+          <div className="px-8 pt-8 pb-4 flex items-center justify-between border-b-2" style={{borderColor: "#7A8A6A"}}>
+            <div className="flex items-center gap-3">
+              <div className="w-14 h-14 rounded-xl flex items-center justify-center p-2" style={{background: "#7A8A6A"}}>
+                <img src="/bg-logo.png" alt="" className="w-full h-full object-contain"/>
+              </div>
+              <div>
+                <div className="font-display text-2xl font-semibold" style={{color: "#2C3625"}}>Boost Growth</div>
+                <div className="text-[11px] tracking-[0.2em] font-bold" style={{color: "#8B9E7A"}}>ATTENDANCE SHEET · ABA SERVICES</div>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="flex items-center gap-2 justify-end">
+                <span className="pill text-[11px]" style={{background: closed ? "#F8EBE7" : "#E5EBE1", color: closed ? "#8A3F27" : "#3D4F35"}}>
+                  {closed ? "🔒 CLOSED" : "🔓 OPEN"}
+                </span>
+                <button onClick={() => setClosed(c => !c)} className="text-[10px] underline no-print" style={{color: "#7A8A6A"}}>toggle</button>
+              </div>
+              {closed && (
+                <input type="date" value={closureDate} onChange={e=>setClosureDate(e.target.value)} className="text-xs mt-1 border-0 outline-none bg-transparent text-right no-print"/>
+              )}
+              {closed && closureDate && <div className="text-xs mt-0.5" style={{color: "#5C6853"}}>Closure: {fmtDate(closureDate)}</div>}
+            </div>
+          </div>
+
+          {/* Patient info row */}
+          <div className="px-8 py-4 grid grid-cols-4 gap-4 border-b border-[#E8E4DE] text-sm">
+            <div>
+              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}>PATIENT'S NAME</div>
+              <div className="font-bold" style={{color: "#2C3625"}}>{client.name}</div>
+            </div>
+            <div>
+              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}>FILE NO.</div>
+              <div className="font-bold" style={{color: "#2C3625"}}>{client.file_no || "—"}</div>
+            </div>
+            <div>
+              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}># PAID SESH.</div>
+              <div className="font-bold" style={{color: "#2C3625"}}>{counted}</div>
+            </div>
+            <div>
+              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}>{pkg}H DAYS</div>
+              <div className="font-bold" style={{color: "#2C3625"}}>{used.toFixed(1)} / {pkg}h</div>
+            </div>
+          </div>
+
+          {/* Sessions table grouped by day */}
           {sessions.length === 0 ? (
             <div className="p-12 text-center" style={{color: "#8B9E7A"}}>No sessions logged yet</div>
           ) : (
-            <table className="w-full text-sm">
-              <thead style={{background: "#F6F4F0"}}>
-                <tr>
-                  <th className="p-2 text-left">#</th>
-                  <th className="p-2 text-left">Date</th>
-                  <th className="p-2 text-left">Time</th>
-                  <th className="p-2 text-left">Hrs</th>
-                  <th className="p-2 text-left">Status</th>
-                  <th className="p-2 text-left">Therapist(s)</th>
-                  <th className="p-2"></th>
+            <table className="w-full text-xs">
+              <thead style={{background: "#F0E9D8"}}>
+                <tr style={{color: "#2C3625"}}>
+                  <th className="p-2 text-left font-bold">Day</th>
+                  <th className="p-2 text-left font-bold">Date</th>
+                  <th className="p-2 text-left font-bold">Status</th>
+                  <th className="p-2 text-left font-bold">Time</th>
+                  <th className="p-2 text-left font-bold"># of Hrs</th>
+                  <th className="p-2 text-left font-bold">Therapist</th>
+                  <th className="p-2 text-left font-bold">Note</th>
+                  <th className="p-2 no-print"></th>
                 </tr>
               </thead>
               <tbody>
-                {pageSessions.map((s, i) => {
-                  const stCls = s.status === "Completed" ? "bg-[#E5EBE1] text-[#3D4F35]" :
-                                s.status === "Cancelled" ? "bg-[#FAF0D1] text-[#6B5218]" :
-                                s.status === "No Show" ? "bg-[#F8EBE7] text-[#8A3F27]" : "bg-[#F0EDE9] text-[#5C6853]";
-                  const tNames = (s.therapist_ids || []).map(id => findT(id)?.name?.replace("Ms. ", "")).filter(Boolean).join(", ");
-                  const canEdit = isAdmin || (s.therapist_ids || []).includes(currentUserId);
-                  return (
-                    <tr key={s.id} className="border-t border-[#E8E4DE] hover:bg-[#FAFAF7]">
-                      <td className="p-2 text-xs" style={{color: "#8B9E7A"}}>{page * PAGE_SIZE + i + 1}</td>
-                      <td className="p-2 font-bold">{s.session_date}</td>
-                      <td className="p-2 text-xs">{s.start_time} – {s.end_time}</td>
-                      <td className="p-2 font-bold">{s.hours}h</td>
-                      <td className="p-2"><span className={`pill ${stCls} text-[10px]`}>{s.status}</span></td>
-                      <td className="p-2 text-xs">{tNames || "—"}</td>
-                      <td className="p-2 text-right whitespace-nowrap">
-                        {canEdit && <button onClick={() => onEdit(s)} className="btn btn-ghost p-1.5"><PencilSimple size={14}/></button>}
-                        {canEdit && <button onClick={() => removeSess(s.id)} className="btn btn-ghost p-1.5 text-red-700"><Trash size={14}/></button>}
-                      </td>
-                    </tr>
-                  );
+                {DAYS.map(day => {
+                  const list = byDay[day];
+                  if (list.length === 0) return null;
+                  return list.map((s, i) => {
+                    const stColor = s.status === "Completed" ? "#3D4F35" :
+                                    s.status === "Cancelled" ? "#6B5218" :
+                                    s.status === "No Show" ? "#8A3F27" : "#5C6853";
+                    const stBg = s.status === "Completed" ? "#E5EBE1" :
+                                  s.status === "Cancelled" ? "#FAF0D1" :
+                                  s.status === "No Show" ? "#F8EBE7" : "#F0EDE9";
+                    const tNames = (s.therapist_ids || []).map(id => findT(id)?.name?.replace("Ms. ", "")).filter(Boolean).join(" - ");
+                    const canEdit = isAdmin || (s.therapist_ids || []).includes(currentUserId);
+                    return (
+                      <tr key={s.id} className="border-t border-[#E8E4DE]">
+                        {i === 0 && <td className="p-2 font-bold align-top" rowSpan={list.length} style={{background: "#FAFAF7", color: "#2C3625"}}>{day}</td>}
+                        <td className="p-2 font-bold">{fmtDate(s.session_date)}</td>
+                        <td className="p-2"><span className="pill text-[10px] uppercase" style={{background: stBg, color: stColor}}>{s.status}</span></td>
+                        <td className="p-2">{s.start_time && s.end_time ? `${s.start_time} - ${s.end_time}` : "—"}</td>
+                        <td className="p-2 font-bold">{s.hours}</td>
+                        <td className="p-2">{tNames || "—"}</td>
+                        <td className="p-2 italic" style={{color: "#5C6853"}}>{s.note || ""}</td>
+                        <td className="p-2 text-right whitespace-nowrap no-print">
+                          {canEdit && <button onClick={() => onEdit(s)} className="btn btn-ghost p-1.5"><PencilSimple size={14}/></button>}
+                          {canEdit && <button onClick={() => removeSess(s.id)} className="btn btn-ghost p-1.5 text-red-700"><Trash size={14}/></button>}
+                        </td>
+                      </tr>
+                    );
+                  });
                 })}
               </tbody>
             </table>
           )}
-        </div>
 
-        {totalPages > 1 && (
-          <div className="p-3 border-t border-[#E8E4DE] flex items-center justify-center gap-2">
-            <button onClick={() => setPage(p => Math.max(0, p-1))} disabled={page===0} className="btn btn-outline text-xs disabled:opacity-40">← Prev</button>
-            <div className="text-xs font-bold" style={{color: "#5C6853"}}>Page {page+1} / {totalPages}</div>
-            <button onClick={() => setPage(p => Math.min(totalPages-1, p+1))} disabled={page===totalPages-1} className="btn btn-outline text-xs disabled:opacity-40">Next →</button>
+          {/* Footer summary */}
+          <div className="px-8 py-5 border-t-2 grid grid-cols-4 gap-4 text-sm" style={{borderColor: "#7A8A6A", background: "#FAFAF7"}}>
+            <div>
+              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}>TOTAL DELIVERED SESSIONS</div>
+              <div className="font-display text-2xl" style={{color: "#3D4F35"}}>{completed}</div>
+            </div>
+            <div>
+              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}>TOTAL NO-SHOW (counted)</div>
+              <div className="font-display text-2xl" style={{color: "#8A3F27"}}>{noShows}</div>
+            </div>
+            <div>
+              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}>TOTAL COUNTED SESSIONS</div>
+              <div className="font-display text-2xl" style={{color: "#2C3625"}}>{counted}</div>
+            </div>
+            <div>
+              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}>HOURS REMAINING</div>
+              <div className="font-display text-2xl" style={{color: rem <= 4 ? "#C97B5C" : "#3D4F35"}}>{rem}h</div>
+            </div>
           </div>
-        )}
-
-        <div className="p-3 border-t border-[#E8E4DE] text-[10px] text-center" style={{color: "#8B9E7A"}}>
-          Generated {new Date().toLocaleString('en-US')} · Boost Growth Center
+          <div className="px-8 py-3 text-[10px] text-center" style={{color: "#8B9E7A"}}>
+            Generated {new Date().toLocaleString('en-US')} · Boost Growth Center · boost-growthsa.com
+          </div>
         </div>
       </div>
     </div>
