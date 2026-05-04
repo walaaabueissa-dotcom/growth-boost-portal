@@ -7,7 +7,7 @@ import os
 import uuid
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Any
+from typing import List, Optional
 
 import bcrypt
 import jwt
@@ -17,7 +17,6 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
 
-# ------------------- Setup -------------------
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
@@ -31,7 +30,6 @@ api = APIRouter(prefix="/api")
 JWT_ALGORITHM = "HS256"
 JWT_SECRET = os.environ["JWT_SECRET"]
 
-# ------------------- Helpers -------------------
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -94,7 +92,7 @@ class TherapistIn(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     color: Optional[str] = "#7A8A6A"
-    pin: str  # 4-6 digits
+    pin: str
 
 class TherapistUpdate(BaseModel):
     name: Optional[str] = None
@@ -104,16 +102,15 @@ class TherapistUpdate(BaseModel):
     pin: Optional[str] = None
 
 class ScheduleCellIn(BaseModel):
-    day: int  # 0-6 (Sat-Fri or Sun-Sat)
-    time_slot: str  # "09:00"
-    therapist_id: Optional[str] = None
+    therapist_id: str
+    day: int  # 0=Sun..4=Thu
+    time_slot: str
+    service_code: Optional[str] = "SS"  # SS, HS, OS, MEETING, SUPERVISION, OBSERVATION, AVC, LEAVE, BREAK
     child_name: Optional[str] = None
-    title: Optional[str] = None
     note: Optional[str] = None
-    color: Optional[str] = "green"  # green, blue, yellow, red, custom
-    custom_color: Optional[str] = None
-    duration: Optional[int] = 1  # number of cells (rows)
-    week_start: str  # ISO date of week start
+    custom_time: Optional[str] = None
+    state: Optional[str] = "normal"  # normal, cancel_therapist, cancel_child
+    week_start: str
 
 class ClientIn(BaseModel):
     name: str
@@ -123,15 +120,20 @@ class ClientIn(BaseModel):
     package: Optional[str] = None
     notes: Optional[str] = None
     therapist_id: Optional[str] = None
+    service_type: Optional[str] = None  # SS, HS, OS
 
 class RequestIn(BaseModel):
     title: str
-    description: str
-    request_type: Optional[str] = "general"  # general, leave, supplies, schedule
-    priority: Optional[str] = "normal"  # low, normal, high, urgent
+    description: Optional[str] = ""
+    request_type: str = "general"  # leave, supplies, schedule_change, reward, general
+    priority: str = "normal"  # low, normal, high, urgent
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    reward_type: Optional[str] = None  # certificate, monetary, day_off, other
+    extra_notes: Optional[str] = None
 
 class RequestStatusUpdate(BaseModel):
-    status: str  # pending, in_progress, approved, rejected, done
+    status: str
     admin_note: Optional[str] = None
 
 class DirectoryContactIn(BaseModel):
@@ -144,9 +146,11 @@ class IntakeIn(BaseModel):
     child_name: str
     parent_name: Optional[str] = None
     phone: Optional[str] = None
-    intake_type: str = "pre"  # pre, post
+    intake_type: str = "pre"
     notes: Optional[str] = None
     status: Optional[str] = "new"
+    intake_date: Optional[str] = None
+    age: Optional[str] = None
 
 # ------------------- Auth -------------------
 @api.post("/auth/login")
@@ -154,21 +158,20 @@ async def admin_login(payload: LoginIn, response: Response):
     email = payload.email.lower()
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(payload.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="بيانات الدخول غير صحيحة")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     token = create_token({"sub": user["id"], "role": "admin", "email": email})
     set_auth_cookie(response, token)
     return {"id": user["id"], "email": email, "name": user.get("name"), "role": "admin", "token": token}
 
 @api.get("/auth/therapists-list")
 async def therapists_list_public():
-    items = await db.therapists.find({}, {"_id": 0, "pin_hash": 0}).to_list(500)
-    return items
+    return await db.therapists.find({}, {"_id": 0, "pin_hash": 0}).sort("name", 1).to_list(500)
 
 @api.post("/auth/therapist-login")
 async def therapist_login(payload: TherapistPinLogin, response: Response):
     t = await db.therapists.find_one({"id": payload.therapist_id})
     if not t or not verify_password(payload.pin, t["pin_hash"]):
-        raise HTTPException(status_code=401, detail="الرقم السري غير صحيح")
+        raise HTTPException(status_code=401, detail="Incorrect PIN")
     token = create_token({"sub": t["id"], "role": "therapist", "name": t["name"]})
     set_auth_cookie(response, token)
     return {"id": t["id"], "name": t["name"], "color": t.get("color"), "role": "therapist", "token": token}
@@ -185,20 +188,14 @@ async def logout(response: Response):
 # ------------------- Therapists -------------------
 @api.get("/therapists")
 async def list_therapists(user=Depends(get_current_user)):
-    return await db.therapists.find({}, {"_id": 0, "pin_hash": 0}).to_list(500)
+    return await db.therapists.find({}, {"_id": 0, "pin_hash": 0}).sort("name", 1).to_list(500)
 
 @api.post("/therapists")
 async def create_therapist(payload: TherapistIn, _=Depends(admin_only)):
     tid = str(uuid.uuid4())
-    doc = {
-        "id": tid,
-        "name": payload.name,
-        "email": payload.email,
-        "phone": payload.phone,
-        "color": payload.color or "#7A8A6A",
-        "pin_hash": hash_password(payload.pin),
-        "created_at": now_iso(),
-    }
+    doc = {"id": tid, "name": payload.name, "email": payload.email, "phone": payload.phone,
+           "color": payload.color or "#7A8A6A", "pin_hash": hash_password(payload.pin),
+           "created_at": now_iso()}
     await db.therapists.insert_one(doc)
     return {k: v for k, v in doc.items() if k not in ("_id", "pin_hash")}
 
@@ -210,8 +207,7 @@ async def update_therapist(tid: str, payload: TherapistUpdate, _=Depends(admin_o
     if not update:
         raise HTTPException(status_code=400, detail="No fields")
     await db.therapists.update_one({"id": tid}, {"$set": update})
-    t = await db.therapists.find_one({"id": tid}, {"_id": 0, "pin_hash": 0})
-    return t
+    return await db.therapists.find_one({"id": tid}, {"_id": 0, "pin_hash": 0})
 
 @api.delete("/therapists/{tid}")
 async def delete_therapist(tid: str, _=Depends(admin_only)):
@@ -224,11 +220,16 @@ async def list_schedule(week_start: Optional[str] = None, user=Depends(get_curre
     q: dict = {}
     if week_start:
         q["week_start"] = week_start
-    cells = await db.schedule_cells.find(q, {"_id": 0}).to_list(2000)
-    # therapists see only cells assigned to them
+    cells = await db.schedule_cells.find(q, {"_id": 0}).to_list(5000)
     if user.get("role") == "therapist":
         cells = [c for c in cells if c.get("therapist_id") == user["id"]]
     return cells
+
+async def _notify(user_id: str, ntype: str, title: str, message: str):
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user_id, "type": ntype,
+        "title": title, "message": message, "read": False, "created_at": now_iso(),
+    })
 
 @api.post("/schedule")
 async def create_schedule_cell(payload: ScheduleCellIn, _=Depends(admin_only)):
@@ -236,17 +237,9 @@ async def create_schedule_cell(payload: ScheduleCellIn, _=Depends(admin_only)):
     doc = {"id": cid, **payload.model_dump(), "created_at": now_iso()}
     await db.schedule_cells.insert_one(doc)
     doc.pop("_id", None)
-    # Auto-notify therapist
     if doc.get("therapist_id"):
-        await db.notifications.insert_one({
-            "id": str(uuid.uuid4()),
-            "user_id": doc["therapist_id"],
-            "type": "schedule",
-            "title": "جلسة جديدة في الجدول",
-            "message": f"تمت إضافة جلسة جديدة: {doc.get('child_name') or doc.get('title') or ''} - {doc.get('time_slot')}",
-            "read": False,
-            "created_at": now_iso(),
-        })
+        await _notify(doc["therapist_id"], "schedule", "New session added",
+                      f"{doc.get('service_code')} | {doc.get('child_name') or ''} at {doc.get('time_slot')}")
     return doc
 
 @api.put("/schedule/{cid}")
@@ -255,15 +248,13 @@ async def update_schedule_cell(cid: str, payload: ScheduleCellIn, _=Depends(admi
     await db.schedule_cells.update_one({"id": cid}, {"$set": update})
     cell = await db.schedule_cells.find_one({"id": cid}, {"_id": 0})
     if cell and cell.get("therapist_id"):
-        await db.notifications.insert_one({
-            "id": str(uuid.uuid4()),
-            "user_id": cell["therapist_id"],
-            "type": "schedule",
-            "title": "تحديث على الجدول",
-            "message": f"تم تعديل جلسة: {cell.get('child_name') or ''} - {cell.get('time_slot')}",
-            "read": False,
-            "created_at": now_iso(),
-        })
+        title = "Schedule update"
+        msg = f"{cell.get('service_code')} | {cell.get('child_name') or ''} at {cell.get('time_slot')}"
+        if cell.get("state") == "cancel_therapist":
+            title = "Session marked as Therapist Cancellation"
+        elif cell.get("state") == "cancel_child":
+            title = "Session marked as Client Cancellation"
+        await _notify(cell["therapist_id"], "schedule", title, msg)
     return cell
 
 @api.post("/schedule/{cid}/duplicate")
@@ -286,23 +277,15 @@ async def notify_schedule(cid: str, body: dict, _=Depends(admin_only)):
     cell = await db.schedule_cells.find_one({"id": cid}, {"_id": 0})
     if not cell or not cell.get("therapist_id"):
         raise HTTPException(status_code=400, detail="No therapist assigned")
-    msg = body.get("message") or f"تنبيه بخصوص جلسة {cell.get('child_name') or ''}"
-    await db.notifications.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": cell["therapist_id"],
-        "type": "schedule_alert",
-        "title": "تنبيه من الإدارة",
-        "message": msg,
-        "read": False,
-        "created_at": now_iso(),
-    })
+    msg = body.get("message") or f"Notice about session: {cell.get('child_name') or ''}"
+    await _notify(cell["therapist_id"], "schedule_alert", "Notice from Admin", msg)
     return {"ok": True}
 
 # ------------------- Clients & Sheets -------------------
 @api.get("/clients")
 async def list_clients(user=Depends(get_current_user)):
     q = {} if user.get("role") == "admin" else {"therapist_id": user["id"]}
-    return await db.clients.find(q, {"_id": 0}).to_list(500)
+    return await db.clients.find(q, {"_id": 0}).sort("name", 1).to_list(500)
 
 @api.post("/clients")
 async def create_client(payload: ClientIn, _=Depends(admin_only)):
@@ -325,8 +308,7 @@ async def delete_client(cid: str, _=Depends(admin_only)):
 
 @api.get("/clients/{cid}/sheets")
 async def list_sheets(cid: str, user=Depends(get_current_user)):
-    sheets = await db.attendance_sheets.find({"client_id": cid}, {"_id": 0}).sort("page_number", 1).to_list(500)
-    return sheets
+    return await db.attendance_sheets.find({"client_id": cid}, {"_id": 0}).sort("page_number", 1).to_list(500)
 
 @api.post("/clients/{cid}/sheets")
 async def upload_sheet(cid: str,
@@ -343,17 +325,13 @@ async def upload_sheet(cid: str,
         ext = Path(file.filename).suffix
         file_name = file.filename
         save_path = UPLOAD_DIR / f"{sid}{ext}"
-        content = await file.read()
-        save_path.write_bytes(content)
+        save_path.write_bytes(await file.read())
         file_path = f"{sid}{ext}"
     last = await db.attendance_sheets.find_one({"client_id": cid}, sort=[("page_number", -1)])
     page_number = (last.get("page_number", 0) + 1) if last else 1
-    doc = {
-        "id": sid, "client_id": cid, "title": title, "session_date": session_date,
-        "therapist_id": therapist_id, "notes": notes, "page_number": page_number,
-        "file_name": file_name, "file_path": file_path,
-        "created_at": now_iso(),
-    }
+    doc = {"id": sid, "client_id": cid, "title": title, "session_date": session_date,
+           "therapist_id": therapist_id, "notes": notes, "page_number": page_number,
+           "file_name": file_name, "file_path": file_path, "created_at": now_iso()}
     await db.attendance_sheets.insert_one(doc)
     doc.pop("_id", None)
     return doc
@@ -380,53 +358,37 @@ async def download_sheet(sid: str, user=Depends(get_current_user)):
 @api.get("/requests")
 async def list_requests(user=Depends(get_current_user)):
     q = {} if user.get("role") == "admin" else {"therapist_id": user["id"]}
-    items = await db.requests.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
-    return items
+    return await db.requests.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
 
 @api.post("/requests")
 async def create_request(payload: RequestIn, user=Depends(get_current_user)):
     if user.get("role") != "therapist":
         raise HTTPException(status_code=403, detail="Therapist only")
     rid = str(uuid.uuid4())
-    doc = {
-        "id": rid,
-        "therapist_id": user["id"],
-        "therapist_name": user.get("name"),
-        "title": payload.title,
-        "description": payload.description,
-        "request_type": payload.request_type,
-        "priority": payload.priority,
-        "status": "pending",
-        "admin_note": None,
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-    }
+    doc = {"id": rid, "therapist_id": user["id"], "therapist_name": user.get("name"),
+           **payload.model_dump(), "status": "pending", "admin_note": None,
+           "created_at": now_iso(), "updated_at": now_iso(),
+           "timeline": [{"event": "submitted", "at": now_iso(), "by": user.get("name")}]}
     await db.requests.insert_one(doc)
     doc.pop("_id", None)
     return doc
 
 @api.put("/requests/{rid}/status")
-async def update_request_status(rid: str, payload: RequestStatusUpdate, _=Depends(admin_only)):
+async def update_request_status(rid: str, payload: RequestStatusUpdate, admin=Depends(admin_only)):
     req = await db.requests.find_one({"id": rid})
     if not req:
         raise HTTPException(status_code=404, detail="Not found")
+    timeline = req.get("timeline", [])
+    timeline.append({"event": payload.status, "at": now_iso(), "by": admin.get("name") or "Admin",
+                     "note": payload.admin_note})
     await db.requests.update_one({"id": rid}, {"$set": {
-        "status": payload.status,
-        "admin_note": payload.admin_note,
-        "updated_at": now_iso(),
+        "status": payload.status, "admin_note": payload.admin_note,
+        "updated_at": now_iso(), "timeline": timeline,
     }})
-    # Notify therapist
-    status_map = {"pending": "قيد الانتظار", "in_progress": "قيد التنفيذ",
-                  "approved": "تمت الموافقة", "rejected": "مرفوض", "done": "مكتمل"}
-    await db.notifications.insert_one({
-        "id": str(uuid.uuid4()),
-        "user_id": req["therapist_id"],
-        "type": "request",
-        "title": "تحديث على طلبك",
-        "message": f"طلب '{req['title']}' أصبح: {status_map.get(payload.status, payload.status)}",
-        "read": False,
-        "created_at": now_iso(),
-    })
+    status_map = {"pending": "Pending", "in_progress": "In Progress",
+                  "approved": "Approved", "rejected": "Rejected", "done": "Completed"}
+    await _notify(req["therapist_id"], "request", "Request update",
+                  f"Your request '{req['title']}' is now: {status_map.get(payload.status, payload.status)}")
     return await db.requests.find_one({"id": rid}, {"_id": 0})
 
 @api.delete("/requests/{rid}")
@@ -495,70 +457,82 @@ async def delete_intake(iid: str, _=Depends(admin_only)):
     await db.intake.delete_one({"id": iid})
     return {"ok": True}
 
-# ------------------- Health -------------------
 @api.get("/")
 async def root():
     return {"message": "Boost Growth Portal API", "status": "ok"}
 
-# ------------------- Setup -------------------
 app.include_router(api)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ------------------- Seed Data -------------------
+THERAPIST_SEED = [
+    {"name": "Ms. Maha", "color": "#7A8A6A"},
+    {"name": "Ms. Fahda", "color": "#D4A64A"},
+    {"name": "Ms. Razan", "color": "#8FA481"},
+    {"name": "Ms. Manal", "color": "#A4BCCB"},
+    {"name": "Ms. Hajer", "color": "#C97B5C"},
+    {"name": "Ms. Rahaf", "color": "#9B7BAB"},
+    {"name": "Ms. Shatha", "color": "#5C8B7E"},
+    {"name": "Ms. Alhanouf", "color": "#B89968"},
+    {"name": "Ms. Waad", "color": "#7B96B5"},
+    {"name": "Ms. Bodoor", "color": "#A8745E"},
+    {"name": "Ms. Fatimah", "color": "#6B9080"},
+    {"name": "Ms. Shrooq", "color": "#D49A60"},
+    {"name": "Ms. Abeer", "color": "#8B7BA8"},
+    {"name": "Ms. Najla", "color": "#7BA890"},
+    {"name": "Ms. Walaa", "color": "#C28E6A"},
+]
+
+CLIENT_SEED = [
+    "Sulaiman Alkhurashi", "Saad", "Abdulaziz W", "Amani", "Alwaleed", "Sultan",
+    "Omar", "Ibrahim", "Ameirah", "Lulu", "Aljoharah", "Salman", "Saleh",
+    "Khalid", "Abdulaziz A", "Mohammed", "Sultan D", "Abdulelah", "Fahad",
+    "Aser", "Abdularahman",
+]
+
 @app.on_event("startup")
 async def startup():
-    # Indexes
     await db.users.create_index("email", unique=True)
     await db.therapists.create_index("id", unique=True)
-    await db.schedule_cells.create_index([("week_start", 1), ("day", 1), ("time_slot", 1)])
+    await db.schedule_cells.create_index([("week_start", 1), ("therapist_id", 1)])
     await db.notifications.create_index("user_id")
 
-    # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()
     admin_password = os.environ["ADMIN_PASSWORD"]
     admin_name = os.environ.get("ADMIN_NAME", "Admin")
     existing = await db.users.find_one({"email": admin_email})
     if not existing:
-        await db.users.insert_one({
-            "id": str(uuid.uuid4()),
-            "email": admin_email,
-            "password_hash": hash_password(admin_password),
-            "name": admin_name,
-            "role": "admin",
-            "created_at": now_iso(),
-        })
+        await db.users.insert_one({"id": str(uuid.uuid4()), "email": admin_email,
+                                   "password_hash": hash_password(admin_password),
+                                   "name": admin_name, "role": "admin", "created_at": now_iso()})
         logger.info(f"Admin seeded: {admin_email}")
     elif not verify_password(admin_password, existing["password_hash"]):
         await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
-        logger.info("Admin password updated")
 
-    # Seed sample therapists if none
+    # Re-seed therapists if old seed (count != 15)
     count = await db.therapists.count_documents({})
-    if count == 0:
-        samples = [
-            {"name": "أ. سارة العتيبي", "color": "#7A8A6A", "pin": "1234"},
-            {"name": "أ. نورة الحربي", "color": "#D4A64A", "pin": "5678"},
-            {"name": "أ. مريم الزهراني", "color": "#8FA481", "pin": "0000"},
-        ]
-        for s in samples:
+    if count != len(THERAPIST_SEED):
+        await db.therapists.delete_many({})
+        for s in THERAPIST_SEED:
             await db.therapists.insert_one({
-                "id": str(uuid.uuid4()),
-                "name": s["name"],
-                "color": s["color"],
-                "pin_hash": hash_password(s["pin"]),
-                "email": None, "phone": None,
-                "created_at": now_iso(),
+                "id": str(uuid.uuid4()), "name": s["name"], "color": s["color"],
+                "pin_hash": hash_password("0000"),
+                "email": None, "phone": None, "created_at": now_iso(),
             })
-        logger.info("Sample therapists seeded")
+        logger.info(f"Seeded {len(THERAPIST_SEED)} therapists with PIN=0000")
+
+    # Seed clients if empty
+    cl_count = await db.clients.count_documents({})
+    if cl_count == 0:
+        for n in CLIENT_SEED:
+            await db.clients.insert_one({
+                "id": str(uuid.uuid4()), "name": n, "package": None,
+                "parent_name": None, "parent_phone": None, "therapist_id": None,
+                "service_type": None, "notes": None, "created_at": now_iso(),
+            })
+        logger.info(f"Seeded {len(CLIENT_SEED)} clients")
 
 @app.on_event("shutdown")
 async def shutdown():
