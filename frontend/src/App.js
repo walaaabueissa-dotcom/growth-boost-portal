@@ -43,7 +43,7 @@ function AppRoutes() {
         <Route path="/schedule" element={<Schedule/>}/>
         <Route path="/attendance" element={<Attendance/>}/>
         <Route path="/clients" element={<Clients/>}/>
-        <Route path="/intake" element={<Intake/>}/>
+        <Route path="/intake" element={<AdminOnly><Intake/></AdminOnly>}/>
         <Route path="/requests" element={<Requests/>}/>
         <Route path="/directory" element={<Directory/>}/>
         <Route path="/resources" element={<Resources/>}/>

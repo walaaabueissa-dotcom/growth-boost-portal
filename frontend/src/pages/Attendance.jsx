@@ -1,240 +1,406 @@
-import { useEffect, useState, useMemo } from "react";
-import api, { formatGregorian } from "../api";
+import { useEffect, useMemo, useState, useCallback } from "react";
+import api from "../api";
 import { useAuth } from "../auth";
 import {
-  CaretLeft, CaretRight, Plus, MagnifyingGlass, FileXls, Download, Trash,
-  CalendarBlank, X, UploadSimple, User
+  MagnifyingGlass, Plus, X, Trash, PencilSimple, ClipboardText, ClockCounterClockwise,
+  CheckCircle, Prohibit, Warning, XCircle, Clock, MapPin
 } from "@phosphor-icons/react";
+
+const STATUS_OPTS = [
+  { id: "Completed", label: "Completed", icon: <CheckCircle size={28} weight="fill"/>, color: "#3D4F35", bg: "#E5EBE1" },
+  { id: "No Service", label: "No Service", icon: <Prohibit size={28} weight="fill"/>, color: "#5C6853", bg: "#F0EDE9" },
+  { id: "Cancelled", label: "Cancelled", icon: <Warning size={28} weight="fill"/>, color: "#8B6918", bg: "#FAF0D1" },
+  { id: "No Show", label: "No Show", icon: <XCircle size={28} weight="fill"/>, color: "#8A3F27", bg: "#F8EBE7" },
+];
+
+function getUsedHours(sessions, clientId) {
+  return sessions
+    .filter(s => s.client_id === clientId && s.status === "Completed")
+    .reduce((sum, s) => sum + (parseFloat(s.hours) || 0), 0);
+}
+function getStatus(used, pkg) {
+  const rem = pkg - used;
+  const pct = rem / pkg;
+  if (rem <= 0 || pct <= 0.2 || rem <= 2) return "urgent";
+  if (pct <= 0.35 || rem <= 4) return "warning";
+  return "ok";
+}
 
 export default function Attendance() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [clients, setClients] = useState([]);
   const [therapists, setTherapists] = useState([]);
+  const [sessions, setSessions] = useState([]);
+  const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState(null);
-  const [sheets, setSheets] = useState([]);
-  const [pageIdx, setPageIdx] = useState(0);
-  const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ title: "", session_date: "", therapist_id: "", notes: "", file: null });
-  const [therapistSearch, setTherapistSearch] = useState("");
-  const [showTherapistDD, setShowTherapistDD] = useState(false);
+  const [logFor, setLogFor] = useState(null); // client OR null OR "__pick__"
+  const [editingSess, setEditingSess] = useState(null);
+  const [historyFor, setHistoryFor] = useState(null);
 
-  useEffect(() => {
-    api.get("/clients").then(({data}) => setClients(data));
-    api.get("/therapists").then(({data}) => setTherapists(data)).catch(() => {});
+  const load = useCallback(async () => {
+    const [c, t, s] = await Promise.all([
+      api.get("/clients"),
+      api.get("/therapists").catch(() => ({ data: [] })),
+      api.get("/sessions"),
+    ]);
+    setClients(c.data); setTherapists(t.data); setSessions(s.data);
   }, []);
+  useEffect(() => { load(); }, [load]);
 
-  useEffect(() => {
-    if (selected) {
-      api.get(`/clients/${selected.id}/sheets`).then(({data}) => { setSheets(data); setPageIdx(Math.max(0, data.length - 1)); });
-    } else { setSheets([]); }
-  }, [selected]);
+  const enriched = useMemo(() => clients.map(c => {
+    const used = getUsedHours(sessions, c.id);
+    const pkg = c.package_hours || 24;
+    const rem = Math.max(0, pkg - used);
+    return { ...c, used, pkg, rem, pct: Math.min(100, Math.round(used/pkg*100)), status: getStatus(used, pkg) };
+  }), [clients, sessions]);
 
-  const filtered = useMemo(() => clients.filter(c => c.name.toLowerCase().includes(search.toLowerCase())), [clients, search]);
-  const filteredTherapists = useMemo(() => therapists.filter(t => t.name.toLowerCase().includes(therapistSearch.toLowerCase())), [therapists, therapistSearch]);
-  const currentSheet = sheets[pageIdx];
-  const findTherapist = (id) => therapists.find(t => t.id === id);
+  const filtered = useMemo(() => {
+    let list = enriched;
+    if (filter !== "all") list = list.filter(c => c.status === filter);
+    if (search) {
+      const q = search.toLowerCase();
+      list = list.filter(c => c.name.toLowerCase().includes(q) || (c.file_no || "").includes(q));
+    }
+    const order = { urgent: 0, warning: 1, ok: 2 };
+    return [...list].sort((a, b) => order[a.status] - order[b.status]);
+  }, [enriched, filter, search]);
 
-  const submit = async (e) => {
-    e.preventDefault();
-    const fd = new FormData();
-    fd.append("title", form.title);
-    fd.append("session_date", form.session_date);
-    if (form.therapist_id) fd.append("therapist_id", form.therapist_id);
-    if (form.notes) fd.append("notes", form.notes);
-    if (form.file) fd.append("file", form.file);
-    await api.post(`/clients/${selected.id}/sheets`, fd, { headers: {"Content-Type": "multipart/form-data"}});
-    setShowAdd(false); setForm({ title: "", session_date: "", therapist_id: "", notes: "", file: null }); setTherapistSearch("");
-    const { data } = await api.get(`/clients/${selected.id}/sheets`);
-    setSheets(data); setPageIdx(data.length - 1);
+  const counts = {
+    all: enriched.length,
+    urgent: enriched.filter(c => c.status === "urgent").length,
+    warning: enriched.filter(c => c.status === "warning").length,
+    ok: enriched.filter(c => c.status === "ok").length,
   };
 
-  const removeSheet = async () => {
-    if (!currentSheet || !window.confirm("Delete this sheet?")) return;
-    await api.delete(`/sheets/${currentSheet.id}`);
-    const { data } = await api.get(`/clients/${selected.id}/sheets`);
-    setSheets(data); setPageIdx(Math.max(0, Math.min(pageIdx, data.length - 1)));
-  };
-
-  const downloadSheet = async () => {
-    const url = `${api.defaults.baseURL}/sheets/${currentSheet.id}/download`;
-    const token = localStorage.getItem("bg_token");
-    const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {}, credentials: "include" });
-    const blob = await res.blob();
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob); a.download = currentSheet.file_name || "sheet";
-    a.click();
-  };
+  const findT = id => therapists.find(t => t.id === id);
 
   return (
     <div>
-      <div className="mb-5">
-        <h1 className="font-display text-3xl font-semibold" style={{color: "#2C3625"}}>Attendance Sheets</h1>
-        <div className="text-sm" style={{color: "#5C6853"}}>Daily session sheets for each child</div>
+      <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
+        <div>
+          <h1 className="font-display text-3xl font-semibold" style={{color: "#2C3625"}}>Attendance</h1>
+          <div className="text-sm" style={{color: "#5C6853"}}>Log sessions, track hours, monitor packages</div>
+        </div>
+        <button data-testid="log-session-picker" onClick={() => setLogFor("__pick__")} className="btn btn-primary"><Plus size={16}/> Log Session</button>
       </div>
 
-      <div className="grid lg:grid-cols-[300px_1fr] gap-5">
-        <div className="card p-4 h-fit">
-          <div className="relative mb-3">
-            <MagnifyingGlass size={18} className="absolute top-3 left-3" style={{color: "#8B9E7A"}}/>
-            <input data-testid="client-search" className="input pl-10" placeholder="Search child..." value={search} onChange={e => setSearch(e.target.value)}/>
-          </div>
-          <div className="flex flex-col gap-1 max-h-[60vh] overflow-y-auto">
-            {filtered.length === 0 && <div className="text-sm text-center py-6" style={{color: "#8B9E7A"}}>No clients</div>}
-            {filtered.map(c => (
-              <button key={c.id} data-testid={`client-${c.id}`} onClick={() => setSelected(c)}
-                      className={`text-left p-3 rounded-xl transition border ${selected?.id===c.id ? "bg-[#7A8A6A] text-white border-[#7A8A6A]" : "border-transparent hover:bg-[#E5EBE1]"}`}>
-                <div className="font-bold">{c.name}</div>
-                <div className={`text-xs ${selected?.id===c.id ? "opacity-80" : ""}`} style={selected?.id===c.id ? {} : {color: "#8B9E7A"}}>{c.package || c.service_type || "—"}</div>
-              </button>
-            ))}
-          </div>
-        </div>
+      {/* Filter pills */}
+      <div className="flex gap-2 flex-wrap mb-3">
+        {[
+          {id:"all", label:"All", color:"#7A8A6A"},
+          {id:"urgent", label:"🔴 Urgent", color:"#C97B5C"},
+          {id:"warning", label:"🟡 Warning", color:"#D4A64A"},
+          {id:"ok", label:"🟢 OK", color:"#7A8A6A"},
+        ].map(f => (
+          <button key={f.id} onClick={() => setFilter(f.id)}
+                  className={`pill px-4 py-2 text-sm transition border-2 ${filter === f.id ? "bg-[#7A8A6A] text-white border-[#7A8A6A]" : "bg-white border-[#E8E4DE]"}`}>
+            {f.label} <span className="opacity-60 text-xs">({counts[f.id]})</span>
+          </button>
+        ))}
+      </div>
 
-        <div>
-          {!selected ? (
-            <div className="card p-12 text-center" style={{color: "#8B9E7A"}}>
-              <FileXls size={48} weight="duotone" className="mx-auto mb-3" style={{color: "#7A8A6A"}}/>
-              <div className="font-bold" style={{color: "#2C3625"}}>Select a child</div>
-              <div className="text-sm">Their session sheets will appear here.</div>
-            </div>
-          ) : (
-            <div>
-              <div className="card p-6 mb-4">
-                <div className="flex flex-wrap items-start gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs tracking-[0.25em] font-bold" style={{color: "#8B9E7A"}}>CLIENT FILE</div>
-                    <h2 className="font-display text-2xl" style={{color: "#2C3625"}}>{selected.name}</h2>
-                    <div className="text-sm" style={{color: "#5C6853"}}>{selected.package || "—"} {selected.parent_name && `· ${selected.parent_name}`}</div>
+      {/* Search */}
+      <div className="relative mb-5">
+        <MagnifyingGlass size={18} className="absolute top-3 left-3" style={{color: "#8B9E7A"}}/>
+        <input data-testid="att-search" className="input pl-10" placeholder="Search client by name or file #..." value={search} onChange={e=>setSearch(e.target.value)}/>
+      </div>
+
+      {/* Client cards */}
+      <div className="space-y-3 stagger">
+        {filtered.length === 0 && <div className="card p-12 text-center" style={{color: "#8B9E7A"}}>No clients</div>}
+        {filtered.map(c => {
+          const fillColor = c.status === "urgent" ? "#C97B5C" : c.status === "warning" ? "#D4A64A" : "#7A8A6A";
+          const stCls = c.status === "urgent" ? "bg-[#F8EBE7] text-[#8A3F27]" : c.status === "warning" ? "bg-[#FAF0D1] text-[#6B5218]" : "bg-[#E5EBE1] text-[#3D4F35]";
+          const stIcon = c.status === "urgent" ? "🔴" : c.status === "warning" ? "🟡" : "🟢";
+          return (
+            <div key={c.id} className="card p-5" style={{borderColor: c.status === "ok" ? "#E8E4DE" : fillColor, borderWidth: c.status === "ok" ? 1 : 2}}>
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <div className="w-12 h-12 rounded-xl flex items-center justify-center font-bold shrink-0 text-white" style={{background: c.color || "#7A8A6A", color: "#2C3625"}}>
+                    {(c.name || "?").charAt(0)}
                   </div>
-                  {isAdmin && <button data-testid="add-sheet-btn" onClick={() => setShowAdd(true)} className="btn btn-primary"><Plus size={16}/> New Sheet</button>}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-lg" style={{color: "#2C3625"}}>{c.name} <span className="text-xs font-normal ml-1" style={{color: "#8B9E7A"}}>#{c.file_no}</span></div>
+                    <div className="text-xs mt-0.5" style={{color: "#8B9E7A"}}>
+                      Pkg {c.pkg}h · Used {c.used.toFixed(1)}h · Main: {findT(c.main_therapist_id)?.name || "—"}
+                    </div>
+                  </div>
                 </div>
+                <span className={`pill ${stCls} font-bold`}>{stIcon} {c.status.toUpperCase()}</span>
               </div>
 
-              {sheets.length === 0 ? (
-                <div className="card p-12 text-center" style={{color: "#8B9E7A"}}>
-                  <CalendarBlank size={48} weight="duotone" className="mx-auto mb-3" style={{color: "#7A8A6A"}}/>
-                  <div className="font-bold" style={{color: "#2C3625"}}>No sheets yet</div>
-                  {isAdmin && <div className="text-sm mt-1">Click "New Sheet" to add the first page.</div>}
+              <div className="flex items-center gap-2 mt-3 mb-3">
+                <div className="flex-1 h-2 bg-[#F0EDE9] rounded-full overflow-hidden">
+                  <div className="h-full rounded-full transition-all" style={{ width: `${c.pct}%`, background: fillColor }}/>
                 </div>
-              ) : (
-                <div className="card p-0 overflow-hidden">
-                  <div className="bg-[#F0E9D8] border-b border-[#E8E4DE] p-4 flex items-center gap-3 flex-wrap">
-                    <button data-testid="prev-page-btn" onClick={() => setPageIdx(Math.max(0, pageIdx-1))} disabled={pageIdx===0} className="btn btn-outline disabled:opacity-40"><CaretLeft size={16}/></button>
-                    <div className="px-4 py-2 bg-white rounded-xl border border-[#E8E4DE] font-bold min-w-32 text-center" style={{color: "#2C3625"}}>
-                      Page {pageIdx+1} / {sheets.length}
-                    </div>
-                    <button data-testid="next-page-btn" onClick={() => setPageIdx(Math.min(sheets.length-1, pageIdx+1))} disabled={pageIdx===sheets.length-1} className="btn btn-outline disabled:opacity-40"><CaretRight size={16}/></button>
-                    <div className="flex-1"/>
-                    {currentSheet?.file_name && <button onClick={downloadSheet} className="btn btn-secondary"><Download size={16}/> Download</button>}
-                    {isAdmin && <button onClick={removeSheet} className="btn btn-outline text-red-700"><Trash size={16}/></button>}
-                  </div>
+                <span className="text-xs min-w-[80px] text-right font-bold" style={{color: "#5C6853"}}>{c.rem}/{c.pkg}h left</span>
+              </div>
 
-                  <div className="p-6">
-                    <div className="border-2 border-dashed border-[#E5EBE1] rounded-xl p-6" style={{background: "rgba(246,244,240,0.5)"}}>
-                      <div className="flex justify-between items-start flex-wrap gap-3 mb-4 pb-4 border-b border-[#E8E4DE]">
-                        <div>
-                          <div className="text-xs font-bold tracking-wider" style={{color: "#8B9E7A"}}>SHEET NO.</div>
-                          <div className="font-display text-3xl" style={{color: "#2C3625"}}>#{String(currentSheet.page_number).padStart(4, '0')}</div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-xs font-bold tracking-wider" style={{color: "#8B9E7A"}}>SESSION DATE</div>
-                          <div className="font-bold text-lg flex items-center gap-2 justify-end" style={{color: "#2C3625"}}>
-                            <CalendarBlank size={18} style={{color: "#7A8A6A"}}/> {formatGregorian(currentSheet.session_date)}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="grid sm:grid-cols-2 gap-4 mb-4">
-                        <div>
-                          <div className="text-xs font-bold tracking-wider" style={{color: "#8B9E7A"}}>TITLE</div>
-                          <div className="font-bold" style={{color: "#2C3625"}}>{currentSheet.title}</div>
-                        </div>
-                        <div>
-                          <div className="text-xs font-bold tracking-wider" style={{color: "#8B9E7A"}}>THERAPIST</div>
-                          <div className="font-bold flex items-center gap-2" style={{color: "#2C3625"}}>
-                            {currentSheet.therapist_id ? (<><User size={16} style={{color: "#7A8A6A"}}/> {findTherapist(currentSheet.therapist_id)?.name || "—"}</>) : "—"}
-                          </div>
-                        </div>
-                      </div>
-                      {currentSheet.notes && (
-                        <div className="mb-4">
-                          <div className="text-xs font-bold tracking-wider" style={{color: "#8B9E7A"}}>NOTES</div>
-                          <div className="whitespace-pre-wrap" style={{color: "#5C6853"}}>{currentSheet.notes}</div>
-                        </div>
-                      )}
-                      {currentSheet.file_name && (
-                        <div className="mt-4 p-4 bg-white rounded-xl border border-[#E8E4DE] flex items-center gap-3">
-                          <FileXls size={32} weight="duotone" style={{color: "#1E7E5E"}}/>
-                          <div className="flex-1 min-w-0">
-                            <div className="font-bold truncate" style={{color: "#2C3625"}}>{currentSheet.file_name}</div>
-                            <div className="text-xs" style={{color: "#8B9E7A"}}>Excel · Page {currentSheet.page_number}</div>
-                          </div>
-                          <button onClick={downloadSheet} className="btn btn-primary"><Download size={16}/> Open</button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
+              <div className="flex gap-2 flex-wrap">
+                <button data-testid={`log-${c.id}`} onClick={() => setLogFor(c)} className="btn btn-primary text-xs"><Plus size={14}/> Log Session</button>
+                <button onClick={() => setHistoryFor(c)} className="btn btn-secondary text-xs"><ClockCounterClockwise size={14}/> History</button>
+                <button onClick={() => setHistoryFor(c)} className="btn btn-gold text-xs"><ClipboardText size={14}/> Invoice Sheet</button>
+              </div>
             </div>
-          )}
-        </div>
+          );
+        })}
       </div>
 
-      {showAdd && (
-        <div className="fixed inset-0 bg-black/40 modal-backdrop flex items-center justify-center p-4 z-50" onClick={() => setShowAdd(false)}>
-          <form onSubmit={submit} className="card p-6 w-full max-w-lg modal-card" onClick={e=>e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-4">
-              <div className="font-display text-2xl">New Attendance Sheet</div>
-              <button type="button" onClick={() => setShowAdd(false)} className="btn btn-ghost p-2"><X size={18}/></button>
+      {/* Picker modal */}
+      {logFor === "__pick__" && (
+        <div className="fixed inset-0 bg-black/40 modal-backdrop flex items-center justify-center p-4 z-50" onClick={() => setLogFor(null)}>
+          <div className="card p-6 w-full max-w-md modal-card" onClick={e=>e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-3">
+              <div className="font-display text-2xl">Select Client</div>
+              <button onClick={() => setLogFor(null)} className="btn btn-ghost p-2"><X size={18}/></button>
             </div>
-            <label className="label">Title</label>
-            <input data-testid="sheet-title-input" className="input mb-3" required value={form.title} onChange={e=>setForm({...form, title: e.target.value})}/>
-
-            <label className="label">Date (Gregorian)</label>
-            <div className="flex items-center gap-2 mb-3">
-              <input data-testid="sheet-date-input" className="input flex-1" type="date" required value={form.session_date} onChange={e=>setForm({...form, session_date: e.target.value})}/>
-              {form.session_date && <span className="text-xs" style={{color: "#8B9E7A"}}>{formatGregorian(form.session_date)}</span>}
+            <div className="max-h-96 overflow-y-auto flex flex-col gap-2">
+              {enriched.map(c => (
+                <button key={c.id} onClick={() => setLogFor(c)} className="text-left p-3 rounded-xl border border-[#E8E4DE] hover:bg-[#E5EBE1] flex items-center gap-3 transition">
+                  <div className="w-9 h-9 rounded-lg flex items-center justify-center font-bold" style={{background: c.color || "#E5EBE1"}}>{c.name.charAt(0)}</div>
+                  <div className="flex-1">
+                    <div className="font-bold text-sm" style={{color: "#2C3625"}}>{c.name}</div>
+                    <div className="text-[11px]" style={{color: "#8B9E7A"}}>#{c.file_no} · {c.rem}/{c.pkg}h left</div>
+                  </div>
+                </button>
+              ))}
             </div>
-
-            <label className="label">Therapist</label>
-            <div className="relative mb-3">
-              <input data-testid="therapist-search-input" className="input"
-                     placeholder="Search by name..."
-                     value={form.therapist_id ? findTherapist(form.therapist_id)?.name || therapistSearch : therapistSearch}
-                     onChange={e => { setTherapistSearch(e.target.value); setShowTherapistDD(true); setForm({...form, therapist_id: ""}); }}
-                     onFocus={() => setShowTherapistDD(true)}
-                     onBlur={() => setTimeout(() => setShowTherapistDD(false), 200)}/>
-              {showTherapistDD && (
-                <div className="absolute z-20 w-full bg-white border border-[#E8E4DE] rounded-xl shadow-lg mt-1 max-h-48 overflow-y-auto">
-                  {filteredTherapists.map(t => (
-                    <button type="button" key={t.id} onClick={() => { setForm({...form, therapist_id: t.id}); setTherapistSearch(t.name); setShowTherapistDD(false); }}
-                            className="w-full text-left p-2 hover:bg-[#E5EBE1] flex items-center gap-2">
-                      <div className="w-7 h-7 rounded-full text-white text-xs flex items-center justify-center font-bold" style={{background: t.color || "#7A8A6A"}}>{t.name?.replace("Ms. ", "").charAt(0)}</div>
-                      <span>{t.name}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <label className="label">Notes</label>
-            <textarea className="textarea mb-3" rows={3} value={form.notes} onChange={e=>setForm({...form, notes: e.target.value})}/>
-
-            <label className="label">Excel File (optional)</label>
-            <label className="btn btn-outline w-full justify-start cursor-pointer mb-4">
-              <UploadSimple size={18}/> {form.file ? form.file.name : "Upload Excel"}
-              <input type="file" accept=".xls,.xlsx,.csv,.pdf" onChange={e => setForm({...form, file: e.target.files[0]})} className="hidden"/>
-            </label>
-
-            <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setShowAdd(false)} className="btn btn-outline">Cancel</button>
-              <button data-testid="sheet-save-btn" type="submit" className="btn btn-primary">Save</button>
-            </div>
-          </form>
+          </div>
         </div>
       )}
+
+      {/* Log Session form */}
+      {logFor && logFor !== "__pick__" && (
+        <LogSessionForm client={logFor} therapists={therapists} currentUser={user} onClose={() => setLogFor(null)} onSaved={() => { setLogFor(null); load(); }}/>
+      )}
+
+      {/* History / Invoice */}
+      {historyFor && (
+        <HistoryModal client={historyFor} sessions={sessions.filter(s => s.client_id === historyFor.id)}
+                      therapists={therapists} isAdmin={isAdmin} currentUserId={user?.id}
+                      onClose={() => setHistoryFor(null)}
+                      onEdit={(s) => { setEditingSess(s); }}
+                      onDeleted={() => load()}/>
+      )}
+
+      {editingSess && (
+        <LogSessionForm session={editingSess} client={clients.find(c => c.id === editingSess.client_id)} therapists={therapists} currentUser={user}
+                        onClose={() => setEditingSess(null)} onSaved={() => { setEditingSess(null); load(); }}/>
+      )}
+    </div>
+  );
+}
+
+function LogSessionForm({ client, therapists, currentUser, onClose, onSaved, session }) {
+  const [form, setForm] = useState(session ? {...session} : {
+    client_id: client.id,
+    session_date: new Date().toISOString().slice(0, 10),
+    start_time: "14:00", end_time: "16:00", hours: 2,
+    status: "Completed",
+    therapist_ids: currentUser?.role === "therapist" ? [currentUser.id] : [client.main_therapist_id].filter(Boolean),
+    note: "", location: client.locations?.[0]?.address || "",
+  });
+
+  const computeHours = (st, et) => {
+    if (!st || !et) return 0;
+    const [h1,m1] = st.split(":").map(Number); const [h2,m2] = et.split(":").map(Number);
+    let diff = (h2*60+m2) - (h1*60+m1); if (diff < 0) diff += 24*60;
+    return Math.round(diff / 30) / 2;
+  };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const payload = {...form, hours: computeHours(form.start_time, form.end_time)};
+    if (session?.id) await api.put(`/sessions/${session.id}`, payload);
+    else await api.post("/sessions", payload);
+    onSaved();
+  };
+
+  const toggleT = (id) => {
+    setForm(f => ({...f, therapist_ids: f.therapist_ids.includes(id) ? f.therapist_ids.filter(x => x !== id) : [...f.therapist_ids, id]}));
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 modal-backdrop flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <form onSubmit={submit} className="card p-6 w-full max-w-lg modal-card max-h-[90vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <div className="font-display text-2xl" style={{color: "#2C3625"}}>{session ? "Edit Session" : "Log Session"}</div>
+            <div className="text-sm" style={{color: "#5C6853"}}>{client?.name} <span className="text-xs">#{client?.file_no}</span></div>
+          </div>
+          <button type="button" onClick={onClose} className="btn btn-ghost p-2"><X size={18}/></button>
+        </div>
+
+        {client?.locations?.length > 0 && (
+          <>
+            <label className="label">Location</label>
+            <select data-testid="sess-location" className="select mb-3" value={form.location} onChange={e=>setForm({...form, location: e.target.value})}>
+              {client.locations.map((l, i) => <option key={i} value={l.address}>{l.service} | {l.address}</option>)}
+            </select>
+          </>
+        )}
+
+        <label className="label">Status</label>
+        <div className="grid grid-cols-2 gap-2 mb-4">
+          {STATUS_OPTS.map(s => (
+            <button key={s.id} type="button" onClick={() => setForm({...form, status: s.id})}
+                    className={`p-4 rounded-xl border-2 flex flex-col items-center gap-1 transition-all ${form.status === s.id ? "ring-2 ring-[#7A8A6A]" : ""}`}
+                    style={{background: s.bg, borderColor: form.status === s.id ? "#7A8A6A" : s.bg, color: s.color}}>
+              {s.icon}
+              <div className="font-bold text-sm">{s.label}</div>
+            </button>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-3 gap-3 mb-3">
+          <div>
+            <label className="label">Date</label>
+            <input data-testid="sess-date" type="date" className="input" required value={form.session_date} onChange={e=>setForm({...form, session_date: e.target.value})}/>
+          </div>
+          <div>
+            <label className="label">Start</label>
+            <input type="time" className="input" value={form.start_time} onChange={e=>setForm({...form, start_time: e.target.value})}/>
+          </div>
+          <div>
+            <label className="label">End</label>
+            <input type="time" className="input" value={form.end_time} onChange={e=>setForm({...form, end_time: e.target.value})}/>
+          </div>
+        </div>
+        <div className="text-xs mb-3" style={{color: "#8B9E7A"}}>
+          <Clock size={12} className="inline mr-1"/> Calculated: <strong>{computeHours(form.start_time, form.end_time)}h</strong>
+        </div>
+
+        <label className="label">Therapist(s)</label>
+        <div className="flex flex-wrap gap-2 mb-3">
+          {therapists.map(t => {
+            const sel = form.therapist_ids.includes(t.id);
+            return (
+              <button key={t.id} type="button" onClick={() => toggleT(t.id)}
+                      className={`pill px-3 py-1.5 text-xs transition ${sel ? "bg-[#7A8A6A] text-white border-[#7A8A6A]" : "bg-white border border-[#E8E4DE]"}`}>
+                {t.name}
+              </button>
+            );
+          })}
+        </div>
+
+        <label className="label">Note (optional)</label>
+        <textarea className="textarea mb-4" rows={3} value={form.note || ""} onChange={e=>setForm({...form, note: e.target.value})}/>
+
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="btn btn-outline">Cancel</button>
+          <button data-testid="sess-save" type="submit" className="btn btn-primary">{session ? "Save changes" : "Log Session"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function HistoryModal({ client, sessions, therapists, isAdmin, currentUserId, onClose, onEdit, onDeleted }) {
+  const [page, setPage] = useState(0);
+  const findT = id => therapists.find(t => t.id === id);
+  const used = sessions.filter(s => s.status === "Completed").reduce((sum, s) => sum + (parseFloat(s.hours) || 0), 0);
+  const pkg = client.package_hours || 24;
+  const rem = Math.max(0, pkg - used);
+
+  const PAGE_SIZE = 10;
+  const totalPages = Math.max(1, Math.ceil(sessions.length / PAGE_SIZE));
+  const pageSessions = sessions.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  const removeSess = async (sid) => {
+    if (!window.confirm("Delete this session?")) return;
+    await api.delete(`/sessions/${sid}`);
+    onDeleted();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 modal-backdrop flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div className="card p-0 w-full max-w-3xl modal-card max-h-[90vh] flex flex-col" onClick={e=>e.stopPropagation()}>
+        {/* Invoice header */}
+        <div className="p-6 border-b border-[#E8E4DE]" style={{background: `${client.color || "#E5EBE1"}30`}}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-xl flex items-center justify-center text-2xl font-bold" style={{background: client.color || "#E5EBE1", color: "#2C3625"}}>{client.name.charAt(0)}</div>
+              <div>
+                <div className="text-xs font-bold tracking-[0.2em]" style={{color: "#8B9E7A"}}>INVOICE / ATTENDANCE SHEET</div>
+                <div className="font-display text-2xl" style={{color: "#2C3625"}}>{client.name}</div>
+                <div className="text-xs" style={{color: "#5C6853"}}>File #{client.file_no} · {client.locations?.[0]?.address}</div>
+              </div>
+            </div>
+            <button onClick={onClose} className="btn btn-ghost p-2"><X size={20}/></button>
+          </div>
+          <div className="grid grid-cols-3 gap-4 mt-4 text-sm">
+            <div className="bg-white rounded-xl p-3 border border-[#E8E4DE]">
+              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}>PACKAGE</div>
+              <div className="font-display text-xl" style={{color: "#2C3625"}}>{pkg}h</div>
+            </div>
+            <div className="bg-white rounded-xl p-3 border border-[#E8E4DE]">
+              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}>USED</div>
+              <div className="font-display text-xl" style={{color: "#7A8A6A"}}>{used.toFixed(1)}h</div>
+            </div>
+            <div className="bg-white rounded-xl p-3 border border-[#E8E4DE]">
+              <div className="text-[10px] font-bold tracking-wider" style={{color: "#8B9E7A"}}>REMAINING</div>
+              <div className="font-display text-xl" style={{color: rem <= 4 ? "#C97B5C" : "#3D4F35"}}>{rem}h</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Sessions table */}
+        <div className="flex-1 overflow-y-auto p-4">
+          {sessions.length === 0 ? (
+            <div className="p-12 text-center" style={{color: "#8B9E7A"}}>No sessions logged yet</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead style={{background: "#F6F4F0"}}>
+                <tr>
+                  <th className="p-2 text-left">#</th>
+                  <th className="p-2 text-left">Date</th>
+                  <th className="p-2 text-left">Time</th>
+                  <th className="p-2 text-left">Hrs</th>
+                  <th className="p-2 text-left">Status</th>
+                  <th className="p-2 text-left">Therapist(s)</th>
+                  <th className="p-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageSessions.map((s, i) => {
+                  const stCls = s.status === "Completed" ? "bg-[#E5EBE1] text-[#3D4F35]" :
+                                s.status === "Cancelled" ? "bg-[#FAF0D1] text-[#6B5218]" :
+                                s.status === "No Show" ? "bg-[#F8EBE7] text-[#8A3F27]" : "bg-[#F0EDE9] text-[#5C6853]";
+                  const tNames = (s.therapist_ids || []).map(id => findT(id)?.name?.replace("Ms. ", "")).filter(Boolean).join(", ");
+                  const canEdit = isAdmin || (s.therapist_ids || []).includes(currentUserId);
+                  return (
+                    <tr key={s.id} className="border-t border-[#E8E4DE] hover:bg-[#FAFAF7]">
+                      <td className="p-2 text-xs" style={{color: "#8B9E7A"}}>{page * PAGE_SIZE + i + 1}</td>
+                      <td className="p-2 font-bold">{s.session_date}</td>
+                      <td className="p-2 text-xs">{s.start_time} – {s.end_time}</td>
+                      <td className="p-2 font-bold">{s.hours}h</td>
+                      <td className="p-2"><span className={`pill ${stCls} text-[10px]`}>{s.status}</span></td>
+                      <td className="p-2 text-xs">{tNames || "—"}</td>
+                      <td className="p-2 text-right whitespace-nowrap">
+                        {canEdit && <button onClick={() => onEdit(s)} className="btn btn-ghost p-1.5"><PencilSimple size={14}/></button>}
+                        {canEdit && <button onClick={() => removeSess(s.id)} className="btn btn-ghost p-1.5 text-red-700"><Trash size={14}/></button>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {totalPages > 1 && (
+          <div className="p-3 border-t border-[#E8E4DE] flex items-center justify-center gap-2">
+            <button onClick={() => setPage(p => Math.max(0, p-1))} disabled={page===0} className="btn btn-outline text-xs disabled:opacity-40">← Prev</button>
+            <div className="text-xs font-bold" style={{color: "#5C6853"}}>Page {page+1} / {totalPages}</div>
+            <button onClick={() => setPage(p => Math.min(totalPages-1, p+1))} disabled={page===totalPages-1} className="btn btn-outline text-xs disabled:opacity-40">Next →</button>
+          </div>
+        )}
+
+        <div className="p-3 border-t border-[#E8E4DE] text-[10px] text-center" style={{color: "#8B9E7A"}}>
+          Generated {new Date().toLocaleString('en-US')} · Boost Growth Center
+        </div>
+      </div>
     </div>
   );
 }

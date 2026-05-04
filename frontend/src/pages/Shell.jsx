@@ -28,12 +28,12 @@ export default function Shell() {
     { to: "/schedule", icon: <CalendarBlank size={18} weight="duotone"/>, label: "Schedule", testid: "nav-schedule" },
     { to: "/attendance", icon: <ClipboardText size={18} weight="duotone"/>, label: "Attendance", testid: "nav-attendance" },
     { to: "/clients", icon: <UsersThree size={18} weight="duotone"/>, label: "Clients", testid: "nav-clients" },
-    { to: "/intake", icon: <UserList size={18} weight="duotone"/>, label: "Intake", testid: "nav-intake" },
     { to: "/requests", icon: <ListChecks size={18} weight="duotone"/>, label: "Requests", testid: "nav-requests" },
     { to: "/directory", icon: <AddressBook size={18} weight="duotone"/>, label: "Directory", testid: "nav-directory" },
     { to: "/resources", icon: <Folders size={18} weight="duotone"/>, label: "Resources", testid: "nav-resources" },
   ];
   if (isAdmin) {
+    links.splice(4, 0, { to: "/intake", icon: <UserList size={18} weight="duotone"/>, label: "Intake", testid: "nav-intake" });
     links.push({ to: "/admin", icon: <Gear size={18} weight="duotone"/>, label: "Admin", testid: "nav-admin" });
   }
 
