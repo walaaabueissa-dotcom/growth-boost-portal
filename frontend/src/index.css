@@ -233,6 +233,17 @@ html, body {
 
 .divider { height: 1px; background: var(--border-default); }
 
+/* Print styles for Attendance invoice */
+@media print {
+    body * { visibility: hidden; }
+    .printable, .printable * { visibility: visible; }
+    .printable {
+        position: absolute; left: 0; top: 0; width: 100%;
+        background: white !important;
+    }
+    .no-print { display: none !important; }
+}
+
 /* Status badge bar at top of card */
 .status-bar {
     height: 4px; border-top-left-radius: 1rem; border-top-right-radius: 1rem;

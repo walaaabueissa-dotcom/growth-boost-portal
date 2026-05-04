@@ -3,7 +3,7 @@ import api from "../api";
 import { useAuth } from "../auth";
 import {
   MagnifyingGlass, Plus, X, Trash, PencilSimple, ClipboardText, ClockCounterClockwise,
-  CheckCircle, Prohibit, Warning, XCircle, Clock, MapPin
+  CheckCircle, Prohibit, Warning, XCircle, Clock, MapPin, Printer
 } from "@phosphor-icons/react";
 
 const STATUS_OPTS = [
@@ -315,7 +315,7 @@ function HistoryModal({ client, sessions, therapists, isAdmin, currentUserId, on
 
   return (
     <div className="fixed inset-0 bg-black/40 modal-backdrop flex items-center justify-center p-4 z-50" onClick={onClose}>
-      <div className="card p-0 w-full max-w-3xl modal-card max-h-[90vh] flex flex-col" onClick={e=>e.stopPropagation()}>
+      <div className="card p-0 w-full max-w-3xl modal-card max-h-[90vh] flex flex-col printable" onClick={e=>e.stopPropagation()}>
         {/* Invoice header */}
         <div className="p-6 border-b border-[#E8E4DE]" style={{background: `${client.color || "#E5EBE1"}30`}}>
           <div className="flex items-center justify-between">
@@ -327,7 +327,10 @@ function HistoryModal({ client, sessions, therapists, isAdmin, currentUserId, on
                 <div className="text-xs" style={{color: "#5C6853"}}>File #{client.file_no} · {client.locations?.[0]?.address}</div>
               </div>
             </div>
-            <button onClick={onClose} className="btn btn-ghost p-2"><X size={20}/></button>
+            <div className="flex items-center gap-2 no-print">
+              <button onClick={() => window.print()} className="btn btn-secondary text-xs"><Printer size={14}/> Print / PDF</button>
+              <button onClick={onClose} className="btn btn-ghost p-2"><X size={20}/></button>
+            </div>
           </div>
           <div className="grid grid-cols-3 gap-4 mt-4 text-sm">
             <div className="bg-white rounded-xl p-3 border border-[#E8E4DE]">

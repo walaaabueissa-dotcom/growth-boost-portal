@@ -11,6 +11,8 @@ import Directory from "./pages/Directory";
 import Intake from "./pages/Intake";
 import Resources from "./pages/Resources";
 import Admin from "./pages/Admin";
+import Reports from "./pages/Reports";
+import ImportPage from "./pages/Import";
 import "./App.css";
 
 function Loading() {
@@ -47,6 +49,8 @@ function AppRoutes() {
         <Route path="/requests" element={<Requests/>}/>
         <Route path="/directory" element={<Directory/>}/>
         <Route path="/resources" element={<Resources/>}/>
+        <Route path="/reports" element={<AdminOnly><Reports/></AdminOnly>}/>
+        <Route path="/import" element={<AdminOnly><ImportPage/></AdminOnly>}/>
         <Route path="/admin" element={<AdminOnly><Admin/></AdminOnly>}/>
       </Route>
       <Route path="*" element={<Navigate to="/home" replace/>}/>

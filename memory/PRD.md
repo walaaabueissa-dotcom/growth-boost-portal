@@ -37,9 +37,24 @@ ABA therapy center staff portal — replace existing Claude/Base44-built portal 
 - ✅ Re-seeded: 13 therapists + 20 clients with FULL info from Base44 source (file_no, locations, color, main+co)
 - ✅ Backend Session model + CRUD endpoints with therapist-filter
 
+### v4 — Reports + Imports + Notifications + Cell Merging
+- ✅ **Reports & Analytics page** (`/reports`, admin-only): 8 stat tiles (therapists, clients, sessions, hours, open requests, urgent/warning clients, cancellations), Per-Therapist Performance card (sorted by completed sessions), Client Hours Status card (sorted urgent → warning → ok)
+- ✅ **Import page** (`/import`, admin-only): 3 tabs
+  - Clients CSV/Excel upload (name, file_no, package_hours, supervisor, parent_name, phone, color, age, notes, main_therapist)
+  - Intake CSV/Excel upload (child_name, parent_name, phone, intake_type, status, intake_date, age, notes)
+  - Historical Schedules loader (loads 2 weeks of Base44 SCHED_DATA from `/app/backend/historical_schedules.json`, parses service codes/child names, supports clear-existing toggle)
+- ✅ **Cell merging in Schedule**: `duration` field 1-4 slots, rendered via `colSpan`. Edit modal has Duration dropdown.
+- ✅ **PDF print of Attendance invoice**: Print/PDF button in History modal triggers `window.print()` with print-only CSS (`.printable` visible, `.no-print` hidden)
+- ✅ **Expanded Notifications**:
+  - Admin gets notification when therapist submits new request (via `_notify_admins`)
+  - Admin gets notification when therapist logs a session (with status)
+  - Admin gets cancellation alert when session is Cancelled or No Show
+  - Admin gets low-hours alert (≤4h remaining or exhausted package)
+  - Admin gets schedule cancellation alert when state set to cancel_therapist or cancel_child
+
 ### Test Status
-- v3 backend: 28/28 pytest pass (100%)
-- Frontend admin flows: ~92% verified visually (Schedule toggle, Attendance cards/Log Session, Clients full info, Intake admin-gate)
+- v4 backend: **43/43 pytest pass (100%)**
+- Frontend admin flows verified visually (Reports, Import, Schedule, Attendance)
 
 ## Test Credentials
 - Admin: `admin@boost-growthsa.com` / `BoostAdmin@2026`

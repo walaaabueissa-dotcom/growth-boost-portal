@@ -110,7 +110,8 @@ class ScheduleCellIn(BaseModel):
     note: Optional[str] = None
     custom_time: Optional[str] = None
     state: Optional[str] = "normal"
-    color: Optional[str] = None  # explicit hex override (else from child name)
+    color: Optional[str] = None
+    duration: Optional[int] = 1  # number of time-slot rows the cell spans (1=single)
     week_start: str
 
 class LocationIn(BaseModel):
@@ -250,6 +251,12 @@ async def _notify(user_id: str, ntype: str, title: str, message: str):
         "title": title, "message": message, "read": False, "created_at": now_iso(),
     })
 
+async def _notify_admins(ntype: str, title: str, message: str):
+    """Send notification to all admin users."""
+    admins = await db.users.find({"role": "admin"}, {"_id": 0, "id": 1}).to_list(50)
+    for a in admins:
+        await _notify(a["id"], ntype, title, message)
+
 @api.post("/schedule")
 async def create_schedule_cell(payload: ScheduleCellIn, _=Depends(admin_only)):
     cid = str(uuid.uuid4())
@@ -270,8 +277,12 @@ async def update_schedule_cell(cid: str, payload: ScheduleCellIn, _=Depends(admi
         title = "Schedule update"
         if cell.get("state") == "cancel_therapist":
             title = "Session marked as Therapist Cancellation"
+            await _notify_admins("cancel_alert", "Therapist cancellation",
+                                 f"{cell.get('child_name') or '—'} session on day {cell.get('day')} at {cell.get('time_slot')} marked Therapist Cancel")
         elif cell.get("state") == "cancel_child":
             title = "Session marked as Client Cancellation"
+            await _notify_admins("cancel_alert", "Client cancellation",
+                                 f"{cell.get('child_name') or '—'} session on day {cell.get('day')} at {cell.get('time_slot')} marked Client Cancel")
         await _notify(cell["therapist_id"], "schedule", title,
                       f"{cell.get('service_code')} | {cell.get('child_name') or ''} at {cell.get('time_slot')}")
     return cell
@@ -356,6 +367,29 @@ async def create_session(payload: SessionIn, user=Depends(get_current_user)):
            "created_at": now_iso()}
     await db.sessions.insert_one(doc)
     doc.pop("_id", None)
+    # Admin alerts
+    client = await db.clients.find_one({"id": payload.client_id}, {"_id": 0})
+    cname = client.get("name") if client else "—"
+    if user.get("role") == "therapist":
+        await _notify_admins("session_log", f"New session logged ({payload.status})",
+                             f"{user.get('name')} logged {payload.status} for {cname} ({payload.hours}h)")
+    if payload.status in ("Cancelled", "No Show"):
+        await _notify_admins("cancel_alert", f"Session {payload.status}: {cname}",
+                             f"On {payload.session_date} ({user.get('name')})")
+    # Low-hours alert
+    if client:
+        used = await db.sessions.aggregate([
+            {"$match": {"client_id": payload.client_id, "status": "Completed"}},
+            {"$group": {"_id": None, "total": {"$sum": "$hours"}}}
+        ]).to_list(1)
+        used_h = used[0]["total"] if used else 0
+        rem = (client.get("package_hours") or 24) - used_h
+        if 0 < rem <= 4:
+            await _notify_admins("low_hours", f"⚠️ {cname} has only {rem}h left",
+                                 f"Pkg {client.get('package_hours')}h, used {used_h}h. Consider package renewal.")
+        elif rem <= 0:
+            await _notify_admins("low_hours", f"🔴 {cname} package exhausted",
+                                 f"Used {used_h}h of {client.get('package_hours')}h.")
     return doc
 
 @api.put("/sessions/{sid}")
@@ -444,6 +478,9 @@ async def create_request(payload: RequestIn, user=Depends(get_current_user)):
            "timeline": [{"event": "submitted", "at": now_iso(), "by": user.get("name")}]}
     await db.requests.insert_one(doc)
     doc.pop("_id", None)
+    # Notify admins of new request
+    await _notify_admins("request_new", f"New {payload.request_type} request",
+                         f"{user.get('name')}: {payload.title} (priority: {payload.priority})")
     return doc
 
 @api.put("/requests/{rid}/status")
@@ -529,6 +566,229 @@ async def update_intake(iid: str, payload: IntakeIn, _=Depends(admin_only)):
 async def delete_intake(iid: str, _=Depends(admin_only)):
     await db.intake.delete_one({"id": iid})
     return {"ok": True}
+
+# ------------------- Reports -------------------
+@api.get("/reports/dashboard")
+async def reports_dashboard(_=Depends(admin_only)):
+    sessions = await db.sessions.find({}, {"_id": 0}).to_list(5000)
+    clients = await db.clients.find({}, {"_id": 0}).to_list(500)
+    therapists = await db.therapists.find({}, {"_id": 0, "pin_hash": 0}).to_list(50)
+    requests = await db.requests.find({}, {"_id": 0}).to_list(500)
+    cells = await db.schedule_cells.find({}, {"_id": 0}).to_list(5000)
+
+    # Sessions per therapist
+    per_t: dict = {}
+    for t in therapists:
+        per_t[t["id"]] = {"name": t["name"], "color": t.get("color"),
+                           "completed": 0, "cancelled": 0, "no_show": 0, "no_service": 0,
+                           "hours": 0.0}
+    for s in sessions:
+        for tid in s.get("therapist_ids") or []:
+            if tid in per_t:
+                if s["status"] == "Completed":
+                    per_t[tid]["completed"] += 1
+                    per_t[tid]["hours"] += float(s.get("hours") or 0)
+                elif s["status"] == "Cancelled":
+                    per_t[tid]["cancelled"] += 1
+                elif s["status"] == "No Show":
+                    per_t[tid]["no_show"] += 1
+                else:
+                    per_t[tid]["no_service"] += 1
+
+    # Per-client used hours + status
+    per_c = []
+    for c in clients:
+        used = sum(float(s.get("hours") or 0) for s in sessions if s.get("client_id") == c["id"] and s.get("status") == "Completed")
+        pkg = c.get("package_hours") or 24
+        rem = max(0, pkg - used)
+        if rem <= 0 or rem <= 2 or rem / pkg <= 0.2:
+            status = "urgent"
+        elif rem / pkg <= 0.35 or rem <= 4:
+            status = "warning"
+        else:
+            status = "ok"
+        per_c.append({"id": c["id"], "name": c["name"], "file_no": c.get("file_no"),
+                      "color": c.get("color"), "pkg": pkg, "used": round(used, 1),
+                      "rem": round(rem, 1), "status": status})
+
+    # Cancellation breakdown from schedule cells (this week)
+    sched_cancel_t = sum(1 for c in cells if c.get("state") == "cancel_therapist")
+    sched_cancel_c = sum(1 for c in cells if c.get("state") == "cancel_child")
+
+    return {
+        "totals": {
+            "therapists": len(therapists),
+            "clients": len(clients),
+            "sessions": len(sessions),
+            "completed_sessions": sum(1 for s in sessions if s.get("status") == "Completed"),
+            "total_hours": round(sum(float(s.get("hours") or 0) for s in sessions if s.get("status") == "Completed"), 1),
+            "open_requests": sum(1 for r in requests if r.get("status") == "pending"),
+            "urgent_clients": sum(1 for c in per_c if c["status"] == "urgent"),
+            "warning_clients": sum(1 for c in per_c if c["status"] == "warning"),
+            "schedule_cells": len(cells),
+            "schedule_cancel_therapist": sched_cancel_t,
+            "schedule_cancel_child": sched_cancel_c,
+        },
+        "per_therapist": list(per_t.values()),
+        "per_client": sorted(per_c, key=lambda x: {"urgent":0,"warning":1,"ok":2}[x["status"]]),
+    }
+
+# ------------------- Imports -------------------
+def _read_table(file: UploadFile) -> List[dict]:
+    """Read xlsx/csv into list of dicts with normalized lower-case keys."""
+    import pandas as pd
+    content = file.file.read()
+    import io
+    if file.filename.lower().endswith(".csv"):
+        df = pd.read_csv(io.BytesIO(content))
+    else:
+        df = pd.read_excel(io.BytesIO(content), engine="openpyxl")
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    df = df.where(df.notna(), None)
+    return df.to_dict("records")
+
+@api.post("/import/clients")
+async def import_clients(file: UploadFile = File(...), _=Depends(admin_only)):
+    rows = _read_table(file)
+    created, skipped = 0, 0
+    therapists = await db.therapists.find({}, {"_id": 0}).to_list(100)
+    t_by_name = {t["name"].lower(): t["id"] for t in therapists}
+    for r in rows:
+        name = r.get("name") or r.get("child_name") or r.get("full_name")
+        if not name:
+            skipped += 1; continue
+        file_no = str(r.get("file_no") or r.get("id") or r.get("file") or "").strip() or None
+        # match therapist name to id
+        main_name = (r.get("main_therapist") or r.get("main") or "").strip().lower() if r.get("main_therapist") or r.get("main") else None
+        main_id = t_by_name.get(main_name) if main_name else None
+        await db.clients.insert_one({
+            "id": str(uuid.uuid4()), "name": str(name).strip(),
+            "file_no": file_no, "package_hours": float(r.get("package_hours") or r.get("pkg") or 24),
+            "supervisor": r.get("supervisor"), "main_therapist_id": main_id,
+            "co_therapist_ids": [], "color": r.get("color") or "#A2C4C9",
+            "locations": [], "parent_name": r.get("parent_name") or r.get("parent"),
+            "parent_phone": str(r.get("parent_phone") or r.get("phone") or "") or None,
+            "age": str(r.get("age") or "") or None, "notes": r.get("notes"),
+            "created_at": now_iso(),
+        })
+        created += 1
+    return {"created": created, "skipped": skipped}
+
+@api.post("/import/intake")
+async def import_intake(file: UploadFile = File(...), _=Depends(admin_only)):
+    rows = _read_table(file)
+    created, skipped = 0, 0
+    for r in rows:
+        name = r.get("child_name") or r.get("name")
+        if not name:
+            skipped += 1; continue
+        intake_type = (r.get("intake_type") or r.get("type") or "pre").lower()
+        if intake_type not in ("pre", "post"):
+            intake_type = "pre"
+        await db.intake.insert_one({
+            "id": str(uuid.uuid4()), "child_name": str(name).strip(),
+            "parent_name": r.get("parent_name") or r.get("parent"),
+            "phone": str(r.get("phone") or "") or None,
+            "intake_type": intake_type, "status": (r.get("status") or "new").lower(),
+            "notes": r.get("notes"), "intake_date": str(r.get("intake_date") or "") or None,
+            "age": str(r.get("age") or "") or None, "created_at": now_iso(),
+        })
+        created += 1
+    return {"created": created, "skipped": skipped}
+
+# ------------------- Historical Schedule Loader -------------------
+HISTORICAL_SCHEDULES = None  # lazy-loaded from JSON file
+
+def _load_historical():
+    global HISTORICAL_SCHEDULES
+    if HISTORICAL_SCHEDULES is None:
+        import json
+        path = ROOT_DIR / "historical_schedules.json"
+        if path.exists():
+            HISTORICAL_SCHEDULES = json.loads(path.read_text())
+        else:
+            HISTORICAL_SCHEDULES = {}
+    return HISTORICAL_SCHEDULES
+
+@api.get("/import/historical-weeks")
+async def list_historical_weeks(_=Depends(admin_only)):
+    data = _load_historical()
+    return {"weeks": list(data.keys())}
+
+@api.post("/import/historical-load")
+async def import_historical(body: dict, _=Depends(admin_only)):
+    """Import all historical weeks into schedule_cells. body: {clear_existing?: bool}"""
+    data = _load_historical()
+    if not data:
+        raise HTTPException(status_code=404, detail="No historical data file found")
+    if body.get("clear_existing"):
+        await db.schedule_cells.delete_many({})
+    therapists = await db.therapists.find({}, {"_id": 0}).to_list(100)
+    t_by_name = {t["name"]: t["id"] for t in therapists}
+    DAYS_MAP = {"Sunday":0, "Monday":1, "Tuesday":2, "Wednesday":3, "Thursday":4}
+    TIMES = ["8:00 AM - 9:00 AM","9:00 AM - 10:00 AM","10:00 AM - 11:00 AM",
+             "11:00 AM - 12:00 PM","12:00 PM - 1:00 PM","1:00 PM - 2:00 PM",
+             "2:00 PM - 3:00 PM","3:00 PM - 4:00 PM","4:00 PM - 5:00 PM",
+             "5:00 PM - 6:00 PM"]
+    inserted = 0
+    weeks_loaded = 0
+    for week_label, therapists_data in data.items():
+        # parse week label like "26 Apr- 30 Apr" → use a fake ISO date for storage
+        week_start_iso = f"hist:{week_label}"
+        weeks_loaded += 1
+        for entry in therapists_data:
+            tname = entry.get("n")
+            t_id = t_by_name.get(tname)
+            if not t_id:
+                continue
+            for day_label, slots in entry.get("s", []):
+                day_idx = DAYS_MAP.get(day_label)
+                if day_idx is None:
+                    continue
+                for slot_idx, raw in enumerate(slots):
+                    if not raw or not str(raw).strip():
+                        continue
+                    txt = str(raw).strip()
+                    # parse service code
+                    service = "SS"
+                    child = None
+                    note = None
+                    custom = None
+                    upper = txt.upper()
+                    if upper.startswith("HS"): service = "HS"
+                    elif upper.startswith("SS"): service = "SS"
+                    elif upper.startswith("OS"): service = "OS"
+                    elif "AVC" in upper: service = "AVC"
+                    elif "SUPERVISION" in upper: service = "SUPERVISION"
+                    elif "OBSERVATION" in upper: service = "OBSERVATION"
+                    elif "MEETING" in upper: service = "MEETING"
+                    elif "LEAVE" in upper: service = "LEAVE"
+                    elif "BREAK" in upper: service = "BREAK"
+                    # extract child name after | or W/
+                    if "|" in txt:
+                        child = txt.split("|", 1)[1].strip()
+                    elif "W/" in txt:
+                        child = txt.split("W/", 1)[1].strip()
+                    elif "with" in txt.lower():
+                        child = txt.lower().split("with", 1)[1].strip()
+                    if child and "(" in child:
+                        custom = child[child.find("(")+1:child.find(")")]
+                        child = child[:child.find("(")].strip()
+                    if slot_idx >= len(TIMES):
+                        continue
+                    if service in ("LEAVE", "BREAK", "AVC"):
+                        note = txt
+                    await db.schedule_cells.insert_one({
+                        "id": str(uuid.uuid4()),
+                        "therapist_id": t_id, "day": day_idx,
+                        "time_slot": TIMES[slot_idx],
+                        "service_code": service, "child_name": child,
+                        "note": note, "custom_time": custom,
+                        "state": "normal", "color": None, "duration": 1,
+                        "week_start": week_start_iso, "created_at": now_iso(),
+                    })
+                    inserted += 1
+    return {"weeks_loaded": weeks_loaded, "cells_inserted": inserted}
 
 @api.get("/")
 async def root():

@@ -1,4 +1,4 @@
-"""Boost Growth Portal v3 backend tests"""
+"""Boost Growth Portal v3+v4 backend tests"""
 import os
 import io
 import pytest
@@ -349,3 +349,234 @@ class TestTherapistsCRUD:
                              json={"name": "TEST_Therapist2"})
         assert u.status_code == 200
         admin_client.delete(f"{BASE_URL}/api/therapists/{tid}")
+
+
+# ================================================================
+# v4 — Reports, Imports, Historical Loader, Admin Notifications
+# ================================================================
+
+# ---------------- Reports Dashboard ----------------
+class TestReportsDashboard:
+    def test_admin_dashboard_structure(self, admin_client):
+        r = admin_client.get(f"{BASE_URL}/api/reports/dashboard")
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert set(d.keys()) >= {"totals", "per_therapist", "per_client"}
+        t = d["totals"]
+        for key in ["therapists","clients","sessions","completed_sessions","total_hours",
+                    "open_requests","urgent_clients","warning_clients","schedule_cells",
+                    "schedule_cancel_therapist","schedule_cancel_child"]:
+            assert key in t, f"missing totals.{key}"
+        assert t["therapists"] == 13
+        assert t["clients"] == 20
+
+    def test_per_therapist_shape(self, admin_client):
+        d = admin_client.get(f"{BASE_URL}/api/reports/dashboard").json()
+        assert isinstance(d["per_therapist"], list)
+        assert len(d["per_therapist"]) == 13
+        for t in d["per_therapist"]:
+            for k in ("name","color","completed","cancelled","no_show","no_service","hours"):
+                assert k in t
+
+    def test_per_client_sorted_by_status(self, admin_client):
+        d = admin_client.get(f"{BASE_URL}/api/reports/dashboard").json()
+        order = {"urgent":0,"warning":1,"ok":2}
+        pc = d["per_client"]
+        assert len(pc) == 20
+        statuses = [order[c["status"]] for c in pc]
+        assert statuses == sorted(statuses), "per_client not sorted urgent->warning->ok"
+        for c in pc:
+            for k in ("id","name","file_no","color","pkg","used","rem","status"):
+                assert k in c
+
+    def test_dashboard_forbidden_for_therapist(self, therapist_client):
+        r = therapist_client.get(f"{BASE_URL}/api/reports/dashboard")
+        assert r.status_code == 403
+
+
+# ---------------- Imports (Clients + Intake) ----------------
+class TestImports:
+    def test_import_clients_csv(self, admin_client):
+        csv = "name,file_no,package_hours\nTEST_ImpChild1,IMP001,30\nTEST_ImpChild2,IMP002,18\n,SKIP,24\n"
+        files = {"file": ("clients.csv", csv, "text/csv")}
+        # Must not include Content-Type json for multipart — use new session headers
+        s = requests.Session()
+        s.headers.update({"Authorization": admin_client.headers["Authorization"]})
+        r = s.post(f"{BASE_URL}/api/import/clients", files=files)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["created"] >= 2  # at least 2 valid rows
+        # Cleanup
+        clients = admin_client.get(f"{BASE_URL}/api/clients").json()
+        for c in clients:
+            if (c.get("name") or "").startswith("TEST_ImpChild"):
+                admin_client.delete(f"{BASE_URL}/api/clients/{c['id']}")
+
+    def test_import_intake_csv(self, admin_client):
+        csv = "child_name,intake_type\nTEST_ImpIntakeA,pre\nTEST_ImpIntakeB,post\n,pre\n"
+        files = {"file": ("intake.csv", csv, "text/csv")}
+        s = requests.Session()
+        s.headers.update({"Authorization": admin_client.headers["Authorization"]})
+        r = s.post(f"{BASE_URL}/api/import/intake", files=files)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["created"] >= 2  # at least 2 valid rows
+        # Cleanup
+        intake = admin_client.get(f"{BASE_URL}/api/intake").json()
+        for i in intake:
+            if i["child_name"].startswith("TEST_ImpIntake"):
+                admin_client.delete(f"{BASE_URL}/api/intake/{i['id']}")
+
+    def test_import_clients_therapist_forbidden(self, therapist_client):
+        csv = "name,file_no\nTEST_X,Z1\n"
+        s = requests.Session()
+        s.headers.update({"Authorization": therapist_client.headers["Authorization"]})
+        r = s.post(f"{BASE_URL}/api/import/clients",
+                   files={"file": ("c.csv", csv, "text/csv")})
+        assert r.status_code == 403
+
+
+# ---------------- Historical Schedule Loader ----------------
+class TestHistoricalLoader:
+    def test_weeks_listed(self, admin_client):
+        r = admin_client.get(f"{BASE_URL}/api/import/historical-weeks")
+        assert r.status_code == 200
+        weeks = r.json()["weeks"]
+        assert len(weeks) == 2, f"expected 2 weeks, got {weeks}"
+        # Week labels should be strings
+        for w in weeks:
+            assert isinstance(w, str) and len(w) > 0
+
+    def test_historical_load_inserts_cells(self, admin_client):
+        # Count cells with hist: prefix before
+        before = admin_client.get(f"{BASE_URL}/api/schedule").json()
+        before_hist = [c for c in before if str(c.get("week_start","")).startswith("hist:")]
+        # Load (clear_existing=False to not nuke real data)
+        r = admin_client.post(f"{BASE_URL}/api/import/historical-load",
+                              json={"clear_existing": False})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["weeks_loaded"] == 2
+        assert d["cells_inserted"] > 0
+        # Verify inserted
+        after = admin_client.get(f"{BASE_URL}/api/schedule").json()
+        after_hist = [c for c in after if str(c.get("week_start","")).startswith("hist:")]
+        assert len(after_hist) >= len(before_hist) + d["cells_inserted"] - 10  # allow small variance
+        # Cleanup historical entries
+        for c in after_hist:
+            admin_client.delete(f"{BASE_URL}/api/schedule/{c['id']}")
+
+
+# ---------------- Schedule duration field ----------------
+class TestScheduleDuration:
+    def test_create_cell_with_duration(self, admin_client, therapists):
+        payload = {
+            "therapist_id": therapists[0]["id"],
+            "day": 1, "time_slot": "9:00 AM - 10:00 AM",
+            "service_code": "SS", "child_name": "TEST_dur",
+            "duration": 2, "state": "normal",
+            "week_start": "2026-01-11",
+        }
+        r = admin_client.post(f"{BASE_URL}/api/schedule", json=payload)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d.get("duration") == 2
+        # Persisted
+        lst = admin_client.get(f"{BASE_URL}/api/schedule?week_start=2026-01-11").json()
+        saved = next((c for c in lst if c["id"] == d["id"]), None)
+        assert saved and saved.get("duration") == 2
+        admin_client.delete(f"{BASE_URL}/api/schedule/{d['id']}")
+
+
+# ---------------- Admin notifications triggers ----------------
+def _admin_notif_count(admin_client):
+    return len(admin_client.get(f"{BASE_URL}/api/notifications").json())
+
+
+class TestAdminNotifications:
+    def test_new_request_notifies_admin(self, admin_client, therapist_client):
+        before = _admin_notif_count(admin_client)
+        r = therapist_client.post(f"{BASE_URL}/api/requests", json={
+            "title": "TEST_NotifReq", "request_type": "leave",
+            "priority": "high", "description": "pls"
+        })
+        assert r.status_code == 200
+        rid = r.json()["id"]
+        after = admin_client.get(f"{BASE_URL}/api/notifications").json()
+        assert len(after) > before
+        assert any("New leave request" in n["title"] for n in after)
+        therapist_client.delete(f"{BASE_URL}/api/requests/{rid}")
+
+    def test_session_log_notifies_admin(self, admin_client, therapist_client):
+        clients = therapist_client.get(f"{BASE_URL}/api/clients").json()
+        assert clients, "therapist[0] has no assigned clients"
+        before = _admin_notif_count(admin_client)
+        r = therapist_client.post(f"{BASE_URL}/api/sessions", json={
+            "client_id": clients[0]["id"], "session_date": "2026-01-20",
+            "hours": 1.0, "status": "Completed", "therapist_ids": [], "note": "TEST"
+        })
+        assert r.status_code == 200, r.text
+        sid = r.json()["id"]
+        after = admin_client.get(f"{BASE_URL}/api/notifications").json()
+        assert len(after) > before
+        assert any("session logged" in n["title"].lower() for n in after)
+        admin_client.delete(f"{BASE_URL}/api/sessions/{sid}")
+
+    def test_cancelled_session_notifies_admin(self, admin_client, therapist_client):
+        clients = therapist_client.get(f"{BASE_URL}/api/clients").json()
+        before = _admin_notif_count(admin_client)
+        r = therapist_client.post(f"{BASE_URL}/api/sessions", json={
+            "client_id": clients[0]["id"], "session_date": "2026-01-21",
+            "hours": 0, "status": "Cancelled", "therapist_ids": [], "note": "TEST_cxl"
+        })
+        assert r.status_code == 200
+        sid = r.json()["id"]
+        after = admin_client.get(f"{BASE_URL}/api/notifications").json()
+        # Expect session_log + cancel_alert (2 new)
+        assert len(after) >= before + 2
+        assert any("Cancelled" in n["title"] for n in after)
+        admin_client.delete(f"{BASE_URL}/api/sessions/{sid}")
+
+    def test_low_hours_alert(self, admin_client, therapists):
+        """Create a throwaway client with small pkg; log session that leaves ≤4h; assert alert."""
+        c = admin_client.post(f"{BASE_URL}/api/clients", json={
+            "name": "TEST_LowHrs", "file_no": "LH1", "package_hours": 5,
+            "main_therapist_id": therapists[0]["id"], "color": "#FF0000"
+        }).json()
+        before = _admin_notif_count(admin_client)
+        # Log session as admin 3h → rem = 2h ≤ 4 → low_hours alert
+        r = admin_client.post(f"{BASE_URL}/api/sessions", json={
+            "client_id": c["id"], "session_date": "2026-01-22",
+            "hours": 3, "status": "Completed",
+            "therapist_ids": [therapists[0]["id"]], "note": "TEST"
+        })
+        assert r.status_code == 200
+        sid = r.json()["id"]
+        after = admin_client.get(f"{BASE_URL}/api/notifications").json()
+        assert any("has only" in n["title"] and "h left" in n["title"] for n in after), \
+            f"low_hours alert not found"
+        # Cleanup
+        admin_client.delete(f"{BASE_URL}/api/sessions/{sid}")
+        admin_client.delete(f"{BASE_URL}/api/clients/{c['id']}")
+
+    def test_schedule_cancel_state_notifies_admin(self, admin_client, therapists):
+        # create cell
+        r = admin_client.post(f"{BASE_URL}/api/schedule", json={
+            "therapist_id": therapists[0]["id"], "day": 2,
+            "time_slot": "10:00 AM - 11:00 AM", "service_code": "SS",
+            "child_name": "TEST_cxl", "state": "normal",
+            "week_start": "2026-01-11",
+        })
+        cid = r.json()["id"]
+        before = _admin_notif_count(admin_client)
+        u = admin_client.put(f"{BASE_URL}/api/schedule/{cid}", json={
+            "therapist_id": therapists[0]["id"], "day": 2,
+            "time_slot": "10:00 AM - 11:00 AM", "service_code": "SS",
+            "child_name": "TEST_cxl", "state": "cancel_child",
+            "week_start": "2026-01-11",
+        })
+        assert u.status_code == 200
+        after = admin_client.get(f"{BASE_URL}/api/notifications").json()
+        assert len(after) > before
+        assert any("Client cancellation" in n["title"] for n in after)
+        admin_client.delete(f"{BASE_URL}/api/schedule/{cid}")

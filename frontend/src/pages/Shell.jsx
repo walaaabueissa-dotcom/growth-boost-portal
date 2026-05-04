@@ -4,7 +4,7 @@ import { useAuth } from "../auth";
 import api from "../api";
 import {
   Plant, House, CalendarBlank, ClipboardText, UsersThree,
-  Folders, AddressBook, Bell, SignOut, ListChecks, Gear, UserList, List, X
+  Folders, AddressBook, Bell, SignOut, ListChecks, Gear, UserList, List, X, ChartBar, UploadSimple
 } from "@phosphor-icons/react";
 
 export default function Shell() {
@@ -34,6 +34,8 @@ export default function Shell() {
   ];
   if (isAdmin) {
     links.splice(4, 0, { to: "/intake", icon: <UserList size={18} weight="duotone"/>, label: "Intake", testid: "nav-intake" });
+    links.push({ to: "/reports", icon: <ChartBar size={18} weight="duotone"/>, label: "Reports", testid: "nav-reports" });
+    links.push({ to: "/import", icon: <UploadSimple size={18} weight="duotone"/>, label: "Import", testid: "nav-import" });
     links.push({ to: "/admin", icon: <Gear size={18} weight="duotone"/>, label: "Admin", testid: "nav-admin" });
   }
 

@@ -74,6 +74,22 @@ export default function Schedule() {
     return m;
   }, [cells]);
 
+  // Track time-slot indices that are "covered" by an earlier cell with duration > 1
+  const coveredSet = useMemo(() => {
+    const cov = new Set();
+    cells.forEach(c => {
+      const dur = c.duration || 1;
+      if (dur <= 1) return;
+      const startIdx = TIME_SLOTS.indexOf(c.time_slot);
+      if (startIdx < 0) return;
+      for (let k = 1; k < dur; k++) {
+        const idx = startIdx + k;
+        if (idx < TIME_SLOTS.length) cov.add(`${c.therapist_id}_${c.day}_${TIME_SLOTS[idx]}`);
+      }
+    });
+    return cov;
+  }, [cells]);
+
   const visibleTherapists = useMemo(() => {
     let list = therapists;
     if (search) list = list.filter(t => t.name.toLowerCase().includes(search.toLowerCase()));
@@ -142,9 +158,13 @@ export default function Schedule() {
                 </td>
                 {TIME_SLOTS.map(ts => {
                   const cell = cellMap[`${therapist.id}_${di}_${ts}`];
+                  const isCovered = coveredSet.has(`${therapist.id}_${di}_${ts}`);
+                  if (isCovered) return null;
                   const sc = SERVICE_CODES.find(s => s.id === cell?.service_code);
+                  const dur = cell?.duration || 1;
                   return (
                     <td key={ts} className={`cell-base ${cell ? 'has-event' : 'cell-empty'}`}
+                        colSpan={dur}
                         data-testid={`cell-${therapist.id}-${di}-${ts}`}
                         onClick={(e) => handleCellClick(e, therapist.id, di, ts, cell)}
                         onContextMenu={(e) => onCtx(e, cell)}>
@@ -197,9 +217,13 @@ export default function Schedule() {
                 </td>
                 {TIME_SLOTS.map(ts => {
                   const cell = cellMap[`${t.id}_${masterDay}_${ts}`];
+                  const isCovered = coveredSet.has(`${t.id}_${masterDay}_${ts}`);
+                  if (isCovered) return null;
                   const sc = SERVICE_CODES.find(s => s.id === cell?.service_code);
+                  const dur = cell?.duration || 1;
                   return (
                     <td key={ts} className={`cell-base ${cell ? 'has-event' : 'cell-empty'}`}
+                        colSpan={dur}
                         onClick={(e) => handleCellClick(e, t.id, masterDay, ts, cell)}
                         onContextMenu={(e) => onCtx(e, cell)}>
                       {cell && <CellEvent cell={cell} sc={sc}/>}
@@ -305,10 +329,17 @@ export default function Schedule() {
                 <input className="input" placeholder="2:30-4:30" value={edit.custom_time || ""} onChange={e=>setEdit({...edit, custom_time: e.target.value})}/>
               </div>
               <div>
-                <label className="label">Note</label>
-                <input className="input" value={edit.note || ""} onChange={e=>setEdit({...edit, note: e.target.value})}/>
+                <label className="label">Duration (slots)</label>
+                <select className="select" value={edit.duration || 1} onChange={e=>setEdit({...edit, duration: parseInt(e.target.value)})}>
+                  <option value={1}>1 slot (1 hour)</option>
+                  <option value={2}>2 slots (merge 2 hours)</option>
+                  <option value={3}>3 slots (merge 3 hours)</option>
+                  <option value={4}>4 slots (merge 4 hours)</option>
+                </select>
               </div>
             </div>
+            <label className="label">Note</label>
+            <input className="input mb-3" value={edit.note || ""} onChange={e=>setEdit({...edit, note: e.target.value})}/>
 
             <label className="label">State</label>
             <div className="flex gap-2 mb-4 flex-wrap">
