@@ -197,6 +197,27 @@ class DirectoryContactUpdate(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
 
+class LeaveIn(BaseModel):
+    therapist_id: str
+    start_date: str               # ISO yyyy-mm-dd
+    end_date: str
+    days: float = 1
+    leave_type: Optional[str] = "Annual"   # Annual / Unpaid / Sickleave / Exam / Emergency
+    status: Optional[str] = "pending"      # pending / approved / done / rejected / cancelled
+    notes: Optional[str] = None
+    admin_note: Optional[str] = None
+
+class LeaveStatusUpdate(BaseModel):
+    status: str
+    admin_note: Optional[str] = None
+
+class CancelNotifyIn(BaseModel):
+    cell_id: str
+    state: str                     # cancel_therapist / cancel_child
+    message: str
+    send_email: Optional[bool] = False
+    extra_email: Optional[str] = None     # override or extra recipient
+
 # ------------------- Auth -------------------
 @api.post("/auth/login")
 async def admin_login(payload: LoginIn, response: Response):
@@ -597,10 +618,333 @@ async def update_resource(rid: str, payload: ResourceIn, _=Depends(admin_only)):
     await db.resources.update_one({"id": rid}, {"$set": payload.model_dump()})
     return await db.resources.find_one({"id": rid}, {"_id": 0})
 
+@api.get("/clients/{cid}/sessions/export")
+async def export_sessions_excel(cid: str, user=Depends(get_current_user)):
+    """Export client's session history as Excel sheet (Boost Growth Attendance Sheet style)."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from io import BytesIO
+
+    client = await db.clients.find_one({"id": cid}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    if user.get("role") == "therapist" and user["id"] not in (client.get("co_therapist_ids") or []) + ([client.get("main_therapist_id")] if client.get("main_therapist_id") else []):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    sessions = await db.sessions.find({"client_id": cid}, {"_id": 0}).sort("session_date", -1).to_list(2000)
+    therapists = {t["id"]: t for t in await db.therapists.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(100)}
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Attendance"
+    head_fill = PatternFill("solid", fgColor="7A8A6A")
+    head_font = Font(bold=True, color="FFFFFF", size=11)
+    sub_fill = PatternFill("solid", fgColor="EFE8D2")
+    border = Border(left=Side(style="thin", color="B5B0A0"), right=Side(style="thin", color="B5B0A0"),
+                    top=Side(style="thin", color="B5B0A0"), bottom=Side(style="thin", color="B5B0A0"))
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    # Title row
+    ws.merge_cells("A1:G1")
+    ws["A1"] = f"BOOST GROWTH — Attendance Sheet — {client.get('name')} (#{client.get('file_no') or '—'})"
+    ws["A1"].font = Font(bold=True, size=14, color="2C3625")
+    ws["A1"].alignment = center
+    ws.row_dimensions[1].height = 28
+
+    # Patient row
+    used = sum(float(s.get("hours") or 0) for s in sessions if s.get("status") == "Completed")
+    pkg = float(client.get("package_hours") or 24)
+    rem = max(0.0, pkg - used)
+    ws["A2"] = "Client"; ws["B2"] = client.get("name")
+    ws["C2"] = "File #"; ws["D2"] = client.get("file_no") or "—"
+    ws["E2"] = "Package"; ws["F2"] = f"{pkg}h"
+    ws["G2"] = f"Used {used}h · Remaining {rem}h"
+    for c in "ABCDEFG":
+        ws[f"{c}2"].fill = sub_fill
+        ws[f"{c}2"].font = Font(bold=True, color="2C3625")
+        ws[f"{c}2"].alignment = center
+
+    # Header
+    headers = ["Date", "Day", "Status", "Time", "Hours", "Therapist", "Note"]
+    for i, h in enumerate(headers, 1):
+        cell = ws.cell(row=4, column=i, value=h)
+        cell.fill = head_fill; cell.font = head_font; cell.alignment = center; cell.border = border
+    ws.row_dimensions[4].height = 24
+
+    # Session rows
+    DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    STATUS_FILLS = {"Completed": "D9EAD3", "Cancelled": "FCE0E8", "No Show": "FFF4C4", "No Service": "ECECEC"}
+    row = 5
+    total_completed = total_cancelled = total_no_show = total_hours = 0
+    for s in sessions:
+        sd = s.get("session_date") or ""
+        try:
+            day_label = DAY_NAMES[datetime.fromisoformat(sd).weekday()] if sd else "—"
+        except Exception:
+            day_label = "—"
+        therapist_names = ", ".join((therapists.get(tid) or {}).get("name", "?") for tid in (s.get("therapist_ids") or []))
+        ws.cell(row=row, column=1, value=sd).alignment = center
+        ws.cell(row=row, column=2, value=day_label).alignment = center
+        st_cell = ws.cell(row=row, column=3, value=s.get("status") or "—")
+        st_cell.alignment = center
+        if s.get("status") in STATUS_FILLS:
+            st_cell.fill = PatternFill("solid", fgColor=STATUS_FILLS[s["status"]])
+        time_str = ""
+        if s.get("start_time") and s.get("end_time"):
+            time_str = f"{s['start_time']} – {s['end_time']}"
+        ws.cell(row=row, column=4, value=time_str).alignment = center
+        ws.cell(row=row, column=5, value=float(s.get("hours") or 0)).alignment = center
+        ws.cell(row=row, column=6, value=therapist_names).alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        ws.cell(row=row, column=7, value=s.get("note") or "").alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        for col in range(1, 8):
+            ws.cell(row=row, column=col).border = border
+        if s.get("status") == "Completed":
+            total_completed += 1; total_hours += float(s.get("hours") or 0)
+        elif s.get("status") == "Cancelled":
+            total_cancelled += 1
+        elif s.get("status") == "No Show":
+            total_no_show += 1
+        row += 1
+
+    # Footer totals
+    foot = row + 1
+    ws.cell(row=foot, column=1, value="TOTALS").font = Font(bold=True, color="2C3625")
+    ws.cell(row=foot, column=2, value=f"Delivered: {total_completed}")
+    ws.cell(row=foot, column=3, value=f"Cancelled: {total_cancelled}")
+    ws.cell(row=foot, column=4, value=f"No-Show: {total_no_show}")
+    ws.cell(row=foot, column=5, value=total_hours).alignment = center
+    ws.cell(row=foot, column=6, value=f"Hours Remaining: {round(rem, 1)}")
+    for col in range(1, 8):
+        ws.cell(row=foot, column=col).fill = sub_fill
+        ws.cell(row=foot, column=col).font = Font(bold=True, color="2C3625")
+
+    # Column widths
+    widths = [12, 8, 14, 16, 8, 24, 32]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+
+    out = BytesIO()
+    wb.save(out)
+    out.seek(0)
+    from fastapi.responses import Response
+    fname = f"attendance_{client.get('file_no') or 'client'}_{client.get('name','').replace(' ','_')}.xlsx"
+    return Response(content=out.getvalue(),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename={fname}"})
+
+# ------------------- Email Settings (admin) -------------------
+class EmailSettingsIn(BaseModel):
+    resend_api_key: Optional[str] = None
+    from_email: Optional[str] = None
+
+@api.get("/admin/email-settings")
+async def get_email_settings(_=Depends(admin_only)):
+    doc = await db.settings.find_one({"key": "email"}, {"_id": 0}) or {}
+    has_key = bool(doc.get("resend_api_key") or os.environ.get("RESEND_API_KEY"))
+    return {
+        "configured": has_key,
+        "from_email": doc.get("from_email") or os.environ.get("EMAIL_FROM") or "Boost Growth <noreply@boostgrowthsa.com>",
+        "key_preview": (doc.get("resend_api_key") or "")[:8] + "..." if doc.get("resend_api_key") else None,
+    }
+
+@api.post("/admin/email-settings")
+async def save_email_settings(payload: EmailSettingsIn, _=Depends(admin_only)):
+    update = {k: v for k, v in payload.model_dump().items() if v}
+    if not update:
+        raise HTTPException(status_code=400, detail="No fields")
+    update["updated_at"] = now_iso()
+    await db.settings.update_one({"key": "email"}, {"$set": update, "$setOnInsert": {"key": "email"}}, upsert=True)
+    # Also set into env so existing _send_email_stub picks it up
+    if "resend_api_key" in update:
+        os.environ["RESEND_API_KEY"] = update["resend_api_key"]
+    if "from_email" in update:
+        os.environ["EMAIL_FROM"] = update["from_email"]
+    return {"ok": True, "configured": True}
+
+@api.get("/admin/email-queue")
+async def list_email_queue(_=Depends(admin_only)):
+    return await db.email_queue.find({}, {"_id": 0}).sort("created_at", -1).limit(100).to_list(100)
+
 @api.delete("/resources/{rid}")
 async def delete_resource(rid: str, _=Depends(admin_only)):
     await db.resources.delete_one({"id": rid})
     return {"ok": True}
+
+# ------------------- Leaves / Vacations -------------------
+DEFAULT_ANNUAL_BALANCE = 30  # baseline annual leave per year
+
+@api.get("/leaves")
+async def list_leaves(year: Optional[int] = None, user=Depends(get_current_user)):
+    q: dict = {}
+    if year:
+        q["start_date"] = {"$gte": f"{year}-01-01", "$lte": f"{year}-12-31"}
+    if user.get("role") != "admin":
+        q["therapist_id"] = user["id"]
+    items = await db.leaves.find(q, {"_id": 0}).sort("start_date", -1).to_list(2000)
+    # Enrich with therapist name + email for admin
+    if user.get("role") == "admin":
+        therapists = await db.therapists.find({}, {"_id": 0, "id": 1, "name": 1, "email": 1, "color": 1}).to_list(100)
+        t_by_id = {t["id"]: t for t in therapists}
+        for it in items:
+            t = t_by_id.get(it.get("therapist_id"))
+            if t:
+                it["therapist_name"] = t.get("name")
+                it["therapist_color"] = t.get("color")
+                it["therapist_email"] = t.get("email")
+    return items
+
+@api.get("/leaves/balance")
+async def leaves_balance(year: Optional[int] = None, user=Depends(get_current_user)):
+    """Return per-therapist annual balance: {therapist_id, name, allocated, used (Annual+approved/done), remaining, breakdown}.
+    For therapist role: only their own.
+    """
+    yr = year or datetime.now(timezone.utc).year
+    therapists = await db.therapists.find({}, {"_id": 0, "id": 1, "name": 1, "color": 1, "email": 1, "annual_balance": 1}).to_list(100)
+    if user.get("role") != "admin":
+        therapists = [t for t in therapists if t["id"] == user["id"]]
+    leaves = await db.leaves.find({"start_date": {"$gte": f"{yr}-01-01", "$lte": f"{yr}-12-31"}}, {"_id": 0}).to_list(2000)
+    out = []
+    for t in therapists:
+        own = [l for l in leaves if l.get("therapist_id") == t["id"]]
+        used_annual = sum(float(l.get("days") or 0) for l in own if l.get("leave_type") == "Annual" and l.get("status") in ("approved", "done"))
+        used_unpaid = sum(float(l.get("days") or 0) for l in own if l.get("leave_type") == "Unpaid" and l.get("status") in ("approved", "done"))
+        used_sick = sum(float(l.get("days") or 0) for l in own if l.get("leave_type") == "Sickleave" and l.get("status") in ("approved", "done"))
+        pending = sum(float(l.get("days") or 0) for l in own if l.get("status") == "pending")
+        allocated = float(t.get("annual_balance") or DEFAULT_ANNUAL_BALANCE)
+        remaining = max(0.0, allocated - used_annual)
+        out.append({
+            "therapist_id": t["id"], "name": t["name"], "color": t.get("color"), "email": t.get("email"),
+            "year": yr, "allocated": allocated,
+            "used_annual": round(used_annual, 1),
+            "used_unpaid": round(used_unpaid, 1),
+            "used_sick": round(used_sick, 1),
+            "pending": round(pending, 1),
+            "remaining": round(remaining, 1),
+            "leaves_count": len(own),
+        })
+    return out
+
+@api.post("/leaves")
+async def create_leave(payload: LeaveIn, user=Depends(get_current_user)):
+    if user.get("role") != "admin" and payload.therapist_id != user["id"]:
+        raise HTTPException(status_code=403, detail="Therapist can only create own leaves")
+    lid = str(uuid.uuid4())
+    doc = {"id": lid, **payload.model_dump(), "created_by": user["id"], "created_at": now_iso()}
+    if user.get("role") != "admin":
+        doc["status"] = "pending"  # therapist requests start as pending
+    await db.leaves.insert_one(doc)
+    doc.pop("_id", None)
+    # Notify admins if therapist submitted
+    if user.get("role") != "admin":
+        await _notify_admins("leave_request", "New leave request",
+                             f"{user.get('name')}: {payload.leave_type} {payload.days}d ({payload.start_date} → {payload.end_date})")
+    return doc
+
+@api.put("/leaves/{lid}")
+async def update_leave(lid: str, payload: LeaveIn, user=Depends(get_current_user)):
+    leave = await db.leaves.find_one({"id": lid})
+    if not leave:
+        raise HTTPException(status_code=404, detail="Not found")
+    if user.get("role") != "admin" and leave.get("therapist_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    update = payload.model_dump()
+    await db.leaves.update_one({"id": lid}, {"$set": update})
+    return await db.leaves.find_one({"id": lid}, {"_id": 0})
+
+@api.put("/leaves/{lid}/status")
+async def update_leave_status(lid: str, payload: LeaveStatusUpdate, admin=Depends(admin_only)):
+    leave = await db.leaves.find_one({"id": lid})
+    if not leave:
+        raise HTTPException(status_code=404, detail="Not found")
+    await db.leaves.update_one({"id": lid}, {"$set": {
+        "status": payload.status, "admin_note": payload.admin_note,
+        "decided_by": admin.get("name") or "Admin", "decided_at": now_iso(),
+    }})
+    # Notify therapist
+    if leave.get("therapist_id"):
+        msg_map = {"approved": "Approved", "rejected": "Rejected", "done": "Completed", "cancelled": "Cancelled", "pending": "Pending"}
+        await _notify(leave["therapist_id"], "leave",
+                      f"Leave {msg_map.get(payload.status, payload.status)}",
+                      f"Your {leave.get('leave_type')} leave from {leave.get('start_date')} to {leave.get('end_date')} ({leave.get('days')}d) is now {msg_map.get(payload.status, payload.status)}.")
+    return await db.leaves.find_one({"id": lid}, {"_id": 0})
+
+@api.delete("/leaves/{lid}")
+async def delete_leave(lid: str, user=Depends(get_current_user)):
+    leave = await db.leaves.find_one({"id": lid})
+    if not leave:
+        return {"ok": True}
+    if user.get("role") != "admin" and leave.get("therapist_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await db.leaves.delete_one({"id": lid})
+    return {"ok": True}
+
+# ------------------- Cancel-Notify (in-app + queued email) -------------------
+async def _send_email_stub(to: str, subject: str, body: str) -> dict:
+    """Email send stub. Will integrate with Resend once API key is configured.
+    Currently logs and stores in db.email_queue for later delivery.
+    """
+    api_key = os.environ.get("RESEND_API_KEY")
+    queue_doc = {
+        "id": str(uuid.uuid4()),
+        "to": to, "subject": subject, "body": body,
+        "status": "queued", "provider": "resend",
+        "created_at": now_iso(),
+    }
+    if api_key:
+        try:
+            import httpx
+            async with httpx.AsyncClient() as cli:
+                r = await cli.post("https://api.resend.com/emails",
+                                   headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                                   json={"from": os.environ.get("EMAIL_FROM", "Boost Growth <noreply@boostgrowthsa.com>"),
+                                         "to": [to], "subject": subject, "html": f"<p>{body.replace(chr(10),'<br/>')}</p>"})
+                if r.status_code in (200, 202):
+                    queue_doc["status"] = "sent"
+                    queue_doc["provider_id"] = r.json().get("id")
+                else:
+                    queue_doc["status"] = "failed"
+                    queue_doc["error"] = r.text[:300]
+        except Exception as e:
+            queue_doc["status"] = "failed"
+            queue_doc["error"] = str(e)[:300]
+    else:
+        queue_doc["status"] = "queued_no_key"
+    await db.email_queue.insert_one(queue_doc)
+    queue_doc.pop("_id", None)
+    return queue_doc
+
+@api.post("/schedule/cancel-notify")
+async def schedule_cancel_notify(payload: CancelNotifyIn, _=Depends(admin_only)):
+    """Mark cell as cancelled + send in-app notification + queue email if requested."""
+    cell = await db.schedule_cells.find_one({"id": payload.cell_id}, {"_id": 0})
+    if not cell:
+        raise HTTPException(status_code=404, detail="Schedule cell not found")
+    # Update state
+    await db.schedule_cells.update_one({"id": payload.cell_id}, {"$set": {"state": payload.state}})
+    # In-app notification
+    if cell.get("therapist_id"):
+        title = "Session marked as Therapist Cancellation" if payload.state == "cancel_therapist" else "Session marked as Client Cancellation"
+        await _notify(cell["therapist_id"], "schedule_cancel", title, payload.message)
+        # Email
+        email_result = None
+        if payload.send_email:
+            therapist = await db.therapists.find_one({"id": cell["therapist_id"]}, {"_id": 0})
+            recipient = payload.extra_email or (therapist.get("email") if therapist else None)
+            if recipient:
+                subj = f"[Boost Growth] {title}"
+                body_lines = [
+                    f"Hello {therapist.get('name') if therapist else ''},",
+                    "",
+                    payload.message,
+                    "",
+                    f"Cell: {cell.get('service_code')} | {cell.get('child_name') or '—'}",
+                    f"Day: {cell.get('day')} | Time: {cell.get('time_slot')}",
+                    "",
+                    "— Boost Growth Portal",
+                ]
+                email_result = await _send_email_stub(recipient, subj, "\n".join(body_lines))
+        return {"ok": True, "in_app": True, "email": email_result}
+    return {"ok": True, "in_app": False}
 
 # ------------------- Intake (admin only) -------------------
 @api.get("/intake")
@@ -1138,6 +1482,14 @@ async def startup():
             })
         logger.info(f"Seeded {len(THERAPIST_SEED)} therapists with PIN=0000")
 
+    # Load persisted email settings from db.settings into env
+    settings_doc = await db.settings.find_one({"key": "email"}, {"_id": 0})
+    if settings_doc:
+        if settings_doc.get("resend_api_key"):
+            os.environ["RESEND_API_KEY"] = settings_doc["resend_api_key"]
+        if settings_doc.get("from_email"):
+            os.environ["EMAIL_FROM"] = settings_doc["from_email"]
+
     # Re-seed clients with full info (force re-seed if seed data changed — track version)
     seed_meta = await db.meta.find_one({"key": "client_seed_version"})
     CURRENT_SEED_VERSION = 6  # bump when CLIENT_SEED changes
@@ -1191,6 +1543,32 @@ async def startup():
                 "created_at": now_iso(),
             })
         logger.info(f"Seeded {len(RESOURCES_SEED)} resources")
+
+    # Seed Leaves (only if empty) — from leaves_seed.json (parsed Vacation 2026)
+    if await db.leaves.count_documents({}) == 0:
+        seed_path = ROOT_DIR / "leaves_seed.json"
+        if seed_path.exists():
+            import json
+            seed = json.loads(seed_path.read_text())
+            t_by_name = {t["name"]: t["id"] async for t in db.therapists.find({}, {"_id": 0, "name": 1, "id": 1})}
+            inserted = 0
+            for item in seed:
+                tid = t_by_name.get(item.get("therapist_name"))
+                if not tid:
+                    continue
+                await db.leaves.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "therapist_id": tid,
+                    "start_date": item.get("start_date") or "",
+                    "end_date": item.get("end_date") or "",
+                    "days": item.get("days") or 0,
+                    "leave_type": item.get("leave_type") or "Annual",
+                    "status": item.get("status") or "done",
+                    "notes": item.get("notes"),
+                    "created_at": now_iso(),
+                })
+                inserted += 1
+            logger.info(f"Seeded {inserted} leaves from Vacation 2026")
 
 @app.on_event("shutdown")
 async def shutdown():

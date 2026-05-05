@@ -121,10 +121,35 @@ export default function Schedule() {
   const remove = async (id) => { await api.delete(`/schedule/${id}`); load(); };
   const duplicate = async (id) => { await api.post(`/schedule/${id}/duplicate`); load(); };
   const sendNotify = async () => {
-    await api.post(`/schedule/${notify.id}/notify`, { message: notify.message });
+    // If notify is for a cancellation state, also persist the cancel + email via cancel-notify
+    if (notify.cancelState) {
+      await api.post(`/schedule/cancel-notify`, {
+        cell_id: notify.id,
+        state: notify.cancelState,
+        message: notify.message,
+        send_email: !!notify.send_email,
+        extra_email: notify.extra_email || null,
+      });
+    } else {
+      await api.post(`/schedule/${notify.id}/notify`, { message: notify.message });
+    }
     setNotify(null);
+    load();
   };
   const setState = async (cell, state) => {
+    if (state === "cancel_therapist" || state === "cancel_child") {
+      // Open notify modal first; cell update happens on send
+      const therapist = therapists.find(t => t.id === cell.therapist_id);
+      const defaultMsg = state === "cancel_therapist"
+        ? `Your session "${cell.service_code}${cell.child_name ? ' | ' + cell.child_name : ''}" at ${cell.time_slot} on day ${DAYS_EN[cell.day]} has been marked as Therapist Cancellation.`
+        : `The session "${cell.service_code}${cell.child_name ? ' | ' + cell.child_name : ''}" at ${cell.time_slot} on day ${DAYS_EN[cell.day]} has been marked as Client Cancellation.`;
+      setNotify({
+        ...cell, message: defaultMsg, cancelState: state,
+        send_email: true, extra_email: therapist?.email || "",
+      });
+      setCtxMenu(null);
+      return;
+    }
     await api.put(`/schedule/${cell.id}`, { ...cell, state });
     setCtxMenu(null); load();
   };
@@ -467,14 +492,59 @@ export default function Schedule() {
 
       {notify && (
         <div className="fixed inset-0 bg-black/40 modal-backdrop flex items-center justify-center p-4 z-50" onClick={() => setNotify(null)}>
-          <div className="card p-6 w-full max-w-md modal-card" onClick={e => e.stopPropagation()}>
-            <div className="font-display text-2xl mb-2">Notify Therapist</div>
-            <div className="text-sm mb-3" style={{ color: "#5C6853" }}>An in-app notification will be sent immediately.</div>
+          <div className="card p-6 w-full max-w-lg modal-card" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <div className="font-display text-2xl">
+                  {notify.cancelState === "cancel_therapist" ? "Mark Therapist Cancellation" :
+                    notify.cancelState === "cancel_child" ? "Mark Client Cancellation" :
+                      "Notify Therapist"}
+                </div>
+                <div className="text-sm" style={{ color: "#5C6853" }}>
+                  {therapists.find(t => t.id === notify.therapist_id)?.name} · {DAYS_EN[notify.day]} · {notify.time_slot}
+                </div>
+              </div>
+              <button onClick={() => setNotify(null)} className="btn btn-ghost p-2"><X size={18} /></button>
+            </div>
+
+            <label className="label mt-3">Notification message</label>
             <textarea data-testid="notify-message" className="textarea mb-3" rows={4} placeholder="Notification message..."
               value={notify.message} onChange={e => setNotify({ ...notify, message: e.target.value })} />
+
+            {notify.cancelState && (
+              <>
+                <div className="rounded-xl border p-3 mb-3" style={{ borderColor: "#E8E4DE", background: "#FAFAF7" }}>
+                  <label className="flex items-center gap-2 cursor-pointer mb-2">
+                    <input data-testid="notify-send-email-cb" type="checkbox" checked={!!notify.send_email}
+                      onChange={e => setNotify({ ...notify, send_email: e.target.checked })} />
+                    <span className="text-sm font-bold flex items-center gap-1" style={{ color: "#2C3625" }}>
+                      <BellRinging size={14} /> Also send email notification
+                    </span>
+                  </label>
+                  {notify.send_email && (
+                    <>
+                      <input data-testid="notify-email-input" type="email" className="input text-sm" placeholder="recipient@boostgrowthsa.com"
+                        value={notify.extra_email || ""} onChange={e => setNotify({ ...notify, extra_email: e.target.value })} />
+                      <div className="text-[11px] mt-2" style={{ color: "#8B9E7A" }}>
+                        💡 Email is queued; will deliver automatically once Resend API key is configured by Admin.
+                      </div>
+                    </>
+                  )}
+                </div>
+                <div className="text-xs mb-3 px-3 py-2 rounded-lg" style={{
+                  background: notify.cancelState === "cancel_therapist" ? "#FFF4C4" : "#FCE0E8",
+                  color: notify.cancelState === "cancel_therapist" ? "#6B5218" : "#8B3A55"
+                }}>
+                  ✕ The session will be marked as <b>{notify.cancelState === "cancel_therapist" ? "Therapist Cancellation" : "Client Cancellation"}</b>.
+                </div>
+              </>
+            )}
+
             <div className="flex justify-end gap-2">
               <button onClick={() => setNotify(null)} className="btn btn-outline">Cancel</button>
-              <button data-testid="notify-send-btn" onClick={sendNotify} className="btn btn-primary"><BellRinging size={16} /> Send</button>
+              <button data-testid="notify-send-btn" onClick={sendNotify} className="btn btn-primary">
+                <BellRinging size={16} /> {notify.cancelState ? "Confirm & Notify" : "Send"}
+              </button>
             </div>
           </div>
         </div>

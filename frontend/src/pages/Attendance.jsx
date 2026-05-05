@@ -3,7 +3,7 @@ import api from "../api";
 import { useAuth } from "../auth";
 import {
   MagnifyingGlass, Plus, X, Trash, PencilSimple, ClipboardText, ClockCounterClockwise,
-  CheckCircle, Prohibit, Warning, XCircle, Clock, MapPin, Printer
+  CheckCircle, Prohibit, Warning, XCircle, Clock, MapPin, Printer, FileXls
 } from "@phosphor-icons/react";
 
 const STATUS_OPTS = [
@@ -341,6 +341,17 @@ function HistoryModal({ client, sessions, therapists, isAdmin, currentUserId, on
         <div className="flex items-center justify-between px-5 py-3 border-b border-[#E8E4DE] no-print">
           <div className="font-bold text-sm" style={{color: "#2C3625"}}>Attendance Sheet · {client.name}</div>
           <div className="flex gap-2">
+            <button data-testid="export-excel-btn" onClick={async () => {
+              const url = `${api.defaults.baseURL}/clients/${client.id}/sessions/export`;
+              const token = localStorage.getItem("bg_token");
+              const r = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {}, credentials: 'include' });
+              if (!r.ok) { alert("Export failed"); return; }
+              const blob = await r.blob();
+              const a = document.createElement("a");
+              a.href = URL.createObjectURL(blob);
+              a.download = `attendance_${client.file_no || client.id}_${client.name.replace(/\s+/g,'_')}.xlsx`;
+              document.body.appendChild(a); a.click(); a.remove();
+            }} className="btn btn-gold text-xs"><FileXls size={14}/> Export Excel</button>
             <button onClick={() => window.print()} className="btn btn-secondary text-xs"><Printer size={14}/> Print / Save PDF</button>
             <button onClick={onClose} className="btn btn-ghost p-2"><X size={20}/></button>
           </div>

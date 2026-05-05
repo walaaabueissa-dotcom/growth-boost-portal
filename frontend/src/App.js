@@ -13,6 +13,7 @@ import Resources from "./pages/Resources";
 import Admin from "./pages/Admin";
 import Reports from "./pages/Reports";
 import ImportPage from "./pages/Import";
+import Leaves from "./pages/Leaves";
 import "./App.css";
 
 function Loading() {
@@ -52,6 +53,7 @@ function AppRoutes() {
         <Route path="/reports" element={<AdminOnly><Reports/></AdminOnly>}/>
         <Route path="/import" element={<AdminOnly><ImportPage/></AdminOnly>}/>
         <Route path="/admin" element={<AdminOnly><Admin/></AdminOnly>}/>
+        <Route path="/leaves" element={<Leaves/>}/>
       </Route>
       <Route path="*" element={<Navigate to="/home" replace/>}/>
     </Routes>

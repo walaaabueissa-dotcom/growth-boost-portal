@@ -4,7 +4,7 @@ import { useAuth } from "../auth";
 import api from "../api";
 import {
   Plant, House, CalendarBlank, ClipboardText, UsersThree,
-  Folders, AddressBook, Bell, SignOut, ListChecks, Gear, UserList, List, X, ChartBar, UploadSimple
+  Folders, AddressBook, Bell, SignOut, ListChecks, Gear, UserList, List, X, ChartBar, UploadSimple, Airplane
 } from "@phosphor-icons/react";
 
 export default function Shell() {
@@ -29,6 +29,7 @@ export default function Shell() {
     { to: "/attendance", icon: <ClipboardText size={18} weight="duotone"/>, label: "Attendance", testid: "nav-attendance" },
     { to: "/clients", icon: <UsersThree size={18} weight="duotone"/>, label: "Clients", testid: "nav-clients" },
     { to: "/requests", icon: <ListChecks size={18} weight="duotone"/>, label: "Requests", testid: "nav-requests" },
+    { to: "/leaves", icon: <Airplane size={18} weight="duotone"/>, label: isAdmin ? "Leaves" : "My Leaves", testid: "nav-leaves" },
     { to: "/directory", icon: <AddressBook size={18} weight="duotone"/>, label: "Directory", testid: "nav-directory" },
     { to: "/resources", icon: <Folders size={18} weight="duotone"/>, label: "Resources", testid: "nav-resources" },
   ];
