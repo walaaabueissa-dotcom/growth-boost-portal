@@ -62,7 +62,11 @@ export function addDays(d, n) {
 }
 export function toISODate(d) {
   const dt = d instanceof Date ? d : new Date(d);
-  return dt.toISOString().slice(0, 10);
+  // Use local date components (NOT toISOString which converts to UTC and shifts the day)
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 export function formatDateRange(weekStart) {
   const end = addDays(weekStart, 4);
