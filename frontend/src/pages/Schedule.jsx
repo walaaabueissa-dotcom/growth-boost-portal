@@ -5,7 +5,7 @@ import { useAuth } from "../auth";
 import {
   CaretLeft, CaretRight, Trash, Copy, BellRinging, X, House, MagnifyingGlass,
   MagnifyingGlassPlus, MagnifyingGlassMinus, Printer, Info, GridFour, UsersThree,
-  CopySimple, Table
+  CopySimple, Table, CalendarBlank
 } from "@phosphor-icons/react";
 
 const STATES = [
@@ -39,7 +39,7 @@ function CellContent({ cell, sc }) {
 export default function Schedule() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const [view, setView] = useState("sheet"); // sheet | blocks | master
+  const [view, setView] = useState(() => (typeof window !== "undefined" && window.innerWidth < 768) ? "blocks" : "sheet");
   const [weekStart, setWeekStart] = useState(startOfWeek(new Date()));
   const [cells, setCells] = useState([]);
   const [therapists, setTherapists] = useState([]);
@@ -392,6 +392,21 @@ export default function Schedule() {
       )}
 
       <div style={{ zoom: `${zoom}%` }}>
+        {cells.length === 0 && (
+          <div className="card p-10 text-center mb-4" style={{ background: "linear-gradient(135deg, #FAF5E8 0%, #F0E9D8 100%)", borderColor: "#E8C572" }}>
+            <CalendarBlank size={42} weight="duotone" className="mx-auto mb-3" style={{ color: "#8B6918" }} />
+            <div className="font-display text-xl mb-2" style={{ color: "#2C3625" }}>No schedule for this week yet</div>
+            <div className="text-sm mb-4" style={{ color: "#5C6853" }}>Choose how to fill this week:</div>
+            <div className="flex gap-2 justify-center flex-wrap">
+              <button onClick={() => setWeekStart(addDays(weekStart, -7))} className="btn btn-outline text-sm">← Go to previous week</button>
+              {isAdmin && (
+                <button onClick={() => { setDupTarget(toISODate(weekStart)); setShowDup(true); setWeekStart(addDays(weekStart, -7)); }} className="btn btn-gold text-sm">
+                  <CopySimple size={14} /> Duplicate previous week here
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         {view === "sheet" && renderSheet()}
         {view === "master" && renderMaster()}
         {view === "blocks" && (

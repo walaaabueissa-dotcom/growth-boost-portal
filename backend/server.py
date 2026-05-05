@@ -814,12 +814,20 @@ async def get_email_settings(_=Depends(admin_only)):
 
 @api.post("/admin/email-settings")
 async def save_email_settings(payload: EmailSettingsIn, _=Depends(admin_only)):
-    update = {k: v for k, v in payload.model_dump().items() if v}
+    update = {}
+    if payload.resend_api_key and payload.resend_api_key.strip():
+        # Validate: Resend keys start with 're_' and are at least 30 chars
+        key = payload.resend_api_key.strip()
+        if not key.startswith("re_") or len(key) < 30:
+            raise HTTPException(status_code=400,
+                detail=f"Invalid Resend API key. Keys start with 're_' and are 30+ chars. You provided {len(key)} chars.")
+        update["resend_api_key"] = key
+    if payload.from_email and payload.from_email.strip():
+        update["from_email"] = payload.from_email.strip()
     if not update:
         raise HTTPException(status_code=400, detail="No fields")
     update["updated_at"] = now_iso()
     await db.settings.update_one({"key": "email"}, {"$set": update, "$setOnInsert": {"key": "email"}}, upsert=True)
-    # Also set into env so existing _send_email_stub picks it up
     if "resend_api_key" in update:
         os.environ["RESEND_API_KEY"] = update["resend_api_key"]
     if "from_email" in update:
@@ -1534,10 +1542,9 @@ async def startup():
     elif not verify_password(admin_password, existing["password_hash"]):
         await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
 
-    # Seed therapists if missing or count mismatch
+    # Seed therapists ONLY on first-time setup (count==0). NEVER overwrite existing data.
     th_count = await db.therapists.count_documents({})
-    if th_count != len(THERAPIST_SEED):
-        await db.therapists.delete_many({})
+    if th_count == 0:
         for s in THERAPIST_SEED:
             await db.therapists.insert_one({
                 "id": str(uuid.uuid4()), "name": s["name"], "color": s["color"],
@@ -1545,7 +1552,22 @@ async def startup():
                 "pin_hash": hash_password("0000"),
                 "created_at": now_iso(),
             })
-        logger.info(f"Seeded {len(THERAPIST_SEED)} therapists with PIN=0000")
+        logger.info(f"First-time seed: {len(THERAPIST_SEED)} therapists with PIN=0000")
+    else:
+        # Add any new seed therapists that don't exist yet (by name) — preserves existing UUIDs
+        existing_names = {t["name"] async for t in db.therapists.find({}, {"_id": 0, "name": 1})}
+        added = 0
+        for s in THERAPIST_SEED:
+            if s["name"] not in existing_names:
+                await db.therapists.insert_one({
+                    "id": str(uuid.uuid4()), "name": s["name"], "color": s["color"],
+                    "email": s.get("email"), "phone": None,
+                    "pin_hash": hash_password("0000"),
+                    "created_at": now_iso(),
+                })
+                added += 1
+        if added:
+            logger.info(f"Added {added} new therapist(s) without disturbing existing data")
 
     # Load persisted email settings from db.settings into env
     settings_doc = await db.settings.find_one({"key": "email"}, {"_id": 0})
@@ -1555,12 +1577,9 @@ async def startup():
         if settings_doc.get("from_email"):
             os.environ["EMAIL_FROM"] = settings_doc["from_email"]
 
-    # Re-seed clients with full info (force re-seed if seed data changed — track version)
-    seed_meta = await db.meta.find_one({"key": "client_seed_version"})
-    CURRENT_SEED_VERSION = 6  # bump when CLIENT_SEED changes
+    # Seed clients ONLY on first-time setup (count==0). Preserves user edits.
     cl_count = await db.clients.count_documents({})
-    if cl_count != len(CLIENT_SEED) or not seed_meta or seed_meta.get("version") != CURRENT_SEED_VERSION:
-        await db.clients.delete_many({})
+    if cl_count == 0:
         therapists_map = {t["name"]: t["id"] async for t in db.therapists.find({}, {"_id": 0, "name": 1, "id": 1})}
         for c in CLIENT_SEED:
             await db.clients.insert_one({
@@ -1574,9 +1593,9 @@ async def startup():
                 "notes": None, "created_at": now_iso(),
             })
         await db.meta.update_one({"key": "client_seed_version"},
-                                 {"$set": {"version": CURRENT_SEED_VERSION, "updated_at": now_iso()}},
+                                 {"$set": {"version": 1, "updated_at": now_iso()}},
                                  upsert=True)
-        logger.info(f"Seeded {len(CLIENT_SEED)} clients (v{CURRENT_SEED_VERSION}) with accurate multi-service info")
+        logger.info(f"First-time seed: {len(CLIENT_SEED)} clients")
 
     # Seed Intake (only if empty — admin may manage manually)
     if await db.intake.count_documents({}) == 0:

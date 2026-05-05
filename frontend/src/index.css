@@ -182,12 +182,13 @@ html, body {
     border: 1px solid #E8E4DE;
     padding: 4px 5px;
     vertical-align: middle;
-    background: white;
+    background: #F5F2ED;   /* light gray-cream so empty cells are visibly empty (intentional gaps) */
     min-height: 48px;
     height: 48px;
     font-size: 11px;
     transition: background 140ms ease;
 }
+.sched-sheet .sheet-slot.has-event { background: white; }   /* event cells override with their color via inline style */
 .sched-sheet .sheet-idx { background: #FAF5E8; font-size: 13px; color: #5C6853; width: 38px; }
 .sched-sheet .sheet-therapist { background: #FAF5E8; min-width: 130px; }
 .sched-sheet .sheet-day { background: #F6F2E4; min-width: 80px; width: 80px; }
@@ -199,6 +200,48 @@ html, body {
     .sched-sheet .sheet-th { background: #EFE8D2 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .sched-sheet .sheet-td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
+
+/* Mobile responsive (≤768px) */
+@media (max-width: 768px) {
+    /* Schedule sheet: shrink cells, smaller fonts, allow horizontal scroll */
+    .sched-sheet { font-size: 10px; }
+    .sched-sheet .sheet-th { font-size: 9px; padding: 4px 3px; min-width: 88px !important; }
+    .sched-sheet .sheet-th-sticky { position: sticky; left: 0; z-index: 4; background: #EFE8D2; }
+    .sched-sheet .sheet-td { padding: 3px 2px; height: 38px; min-height: 38px; font-size: 9.5px; }
+    .sched-sheet .sheet-idx { width: 26px !important; min-width: 26px !important; padding: 2px !important; font-size: 10px; }
+    .sched-sheet .sheet-therapist { min-width: 88px !important; padding: 2px 4px; position: sticky; left: 26px; z-index: 2; }
+    .sched-sheet .sheet-day { width: 56px !important; min-width: 56px !important; padding: 1px 2px; }
+    .sched-sheet .sheet-slot { min-width: 88px !important; }
+    .sched-sheet .sheet-therapist .w-7 { width: 22px; height: 22px; font-size: 9px; }
+    .sched-sheet .sheet-therapist span { font-size: 10px !important; line-height: 1.1; }
+
+    /* Cards & general spacing */
+    .card { padding: 12px !important; }
+    h1.font-display { font-size: 1.5rem !important; }
+    .pill { font-size: 10px !important; padding: 2px 6px !important; }
+    .btn { font-size: 11px !important; padding: 6px 10px !important; }
+    .btn-primary, .btn-secondary, .btn-gold, .btn-outline { font-size: 11px !important; }
+
+    /* Modal full-width on phone */
+    .modal-card { width: calc(100vw - 24px) !important; max-width: none !important; padding: 16px !important; }
+    .input, .select, .textarea { font-size: 14px !important; padding: 8px 10px !important; }
+
+    /* Top nav becomes compact (mobile drawer is used; desktop nav is hidden via lg:flex/lg:hidden) */
+    .nav-link { padding: 0.5rem 0.7rem; font-size: 0.85rem; }
+
+    /* Tables: enable horizontal scroll without breaking layout */
+    .overflow-x-auto { -webkit-overflow-scrolling: touch; }
+
+    /* Reduce zoom controls / week nav grouping on mobile */
+    .stagger > * { animation-delay: 0ms !important; }
+}
+
+@media (max-width: 480px) {
+    .sched-sheet .sheet-th { font-size: 8px; }
+    .sched-sheet .sheet-td { font-size: 9px; }
+    h1.font-display { font-size: 1.25rem !important; }
+}
+
 
     background: var(--pink-cancel) !important;
     border-color: var(--pink-cancel-border) !important;
