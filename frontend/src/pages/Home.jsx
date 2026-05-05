@@ -1,36 +1,40 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import api from "../api";
+import api, { startOfWeek, toISODate } from "../api";
 import { useAuth } from "../auth";
-import { CalendarBlank, ClipboardText, UsersThree, ListChecks, Plant, ArrowRight, Sparkle, Leaf } from "@phosphor-icons/react";
+import { CalendarBlank, ClipboardText, UsersThree, ListChecks, Plant, ArrowRight, Sparkle } from "@phosphor-icons/react";
 
 export default function Home() {
   const { user } = useAuth();
-  const [stats, setStats] = useState({ clients: 0, therapists: 0, requests: 0, sessions: 0 });
+  const [stats, setStats] = useState({ clients: 0, therapists: 0, requests: 0, weekSessions: 0, weekHours: 0 });
 
   useEffect(() => {
     (async () => {
       try {
+        const weekISO = toISODate(startOfWeek(new Date()));
         const [c, t, r, s] = await Promise.all([
           api.get("/clients"),
           api.get("/therapists").catch(() => ({ data: [] })),
           api.get("/requests"),
-          api.get("/schedule"),
+          api.get("/schedule", { params: { week_start: weekISO } }),
         ]);
+        // Count real sessions (exclude LEAVE/BREAK/AVC meta)
+        const real = s.data.filter(x => !["LEAVE", "BREAK", "AVC"].includes(x.service_code));
+        const hours = real.reduce((acc, x) => acc + (x.duration || 1), 0);
         setStats({
           clients: c.data.length, therapists: t.data.length,
           requests: r.data.filter(x => x.status === "pending").length,
-          sessions: s.data.length,
+          weekSessions: real.length, weekHours: hours,
         });
       } catch (_e) { /* ignore */ }
     })();
   }, []);
 
   const tiles = [
-    { to: "/schedule", icon: <CalendarBlank size={26} weight="duotone"/>, title: "Weekly Schedule", desc: "Manage therapist sessions", count: stats.sessions, color: "#E5EBE1", iconColor: "#3D4F35" },
-    { to: "/attendance", icon: <ClipboardText size={26} weight="duotone"/>, title: "Attendance", desc: "Daily preparation sheets", count: stats.clients, color: "#FAF0D1", iconColor: "#6B5218" },
-    { to: "/clients", icon: <UsersThree size={26} weight="duotone"/>, title: "Clients", desc: "Children portfolios", count: stats.clients, color: "#EAF0F3", iconColor: "#375568" },
-    { to: "/requests", icon: <ListChecks size={26} weight="duotone"/>, title: "Requests", desc: "Pending requests", count: stats.requests, color: "#F1ECF7", iconColor: "#4E3F70" },
+    { to: "/schedule", icon: <CalendarBlank size={26} weight="duotone" />, title: "This Week", desc: `${stats.weekHours}h scheduled across ${stats.weekSessions} sessions`, count: stats.weekSessions, color: "#E5EBE1", iconColor: "#3D4F35" },
+    { to: "/attendance", icon: <ClipboardText size={26} weight="duotone" />, title: "Attendance", desc: "Daily preparation sheets", count: stats.clients, color: "#FAF0D1", iconColor: "#6B5218" },
+    { to: "/clients", icon: <UsersThree size={26} weight="duotone" />, title: "Clients", desc: "Children portfolios", count: stats.clients, color: "#EAF0F3", iconColor: "#375568" },
+    { to: "/requests", icon: <ListChecks size={26} weight="duotone" />, title: "Requests", desc: "Pending requests", count: stats.requests, color: "#F1ECF7", iconColor: "#4E3F70" },
   ];
 
   return (

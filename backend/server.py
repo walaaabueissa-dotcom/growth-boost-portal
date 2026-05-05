@@ -173,6 +173,29 @@ class IntakeIn(BaseModel):
     status: Optional[str] = "new"
     intake_date: Optional[str] = None
     age: Optional[str] = None
+    service: Optional[str] = None          # HS / SS / HS / SS
+    district: Optional[str] = None          # Dis column
+    time_pref: Optional[str] = None         # Morning / Evening / Any
+    diagnosis: Optional[str] = None
+    language: Optional[str] = None          # Post-intake only
+    priority: Optional[bool] = False
+
+class ResourceIn(BaseModel):
+    title: str
+    description: Optional[str] = None
+    url: str
+    category: Optional[str] = "drive"       # drive / file / link
+    visibility: str = "all"                 # all / admin / therapist
+    icon: Optional[str] = "Folders"
+    bg: Optional[str] = "#E5EBE1"
+    color: Optional[str] = "#3D4F35"
+    sort_order: Optional[int] = 100
+
+class DirectoryContactUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
 
 # ------------------- Auth -------------------
 @api.post("/auth/login")
@@ -539,9 +562,44 @@ async def create_contact(payload: DirectoryContactIn, _=Depends(admin_only)):
     doc.pop("_id", None)
     return doc
 
+@api.put("/directory/{cid}")
+async def update_contact(cid: str, payload: DirectoryContactUpdate, _=Depends(admin_only)):
+    update = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not update:
+        raise HTTPException(status_code=400, detail="No fields")
+    await db.directory.update_one({"id": cid}, {"$set": update})
+    return await db.directory.find_one({"id": cid}, {"_id": 0})
+
 @api.delete("/directory/{cid}")
 async def delete_contact(cid: str, _=Depends(admin_only)):
     await db.directory.delete_one({"id": cid})
+    return {"ok": True}
+
+# ------------------- Resources -------------------
+@api.get("/resources")
+async def list_resources(user=Depends(get_current_user)):
+    items = await db.resources.find({}, {"_id": 0}).sort("sort_order", 1).to_list(500)
+    if user.get("role") == "admin":
+        return items
+    # Therapists see only "therapist" and "all" visibility
+    return [r for r in items if r.get("visibility") in ("therapist", "all")]
+
+@api.post("/resources")
+async def create_resource(payload: ResourceIn, _=Depends(admin_only)):
+    rid = str(uuid.uuid4())
+    doc = {"id": rid, **payload.model_dump(), "created_at": now_iso()}
+    await db.resources.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api.put("/resources/{rid}")
+async def update_resource(rid: str, payload: ResourceIn, _=Depends(admin_only)):
+    await db.resources.update_one({"id": rid}, {"$set": payload.model_dump()})
+    return await db.resources.find_one({"id": rid}, {"_id": 0})
+
+@api.delete("/resources/{rid}")
+async def delete_resource(rid: str, _=Depends(admin_only)):
+    await db.resources.delete_one({"id": rid})
     return {"ok": True}
 
 # ------------------- Intake (admin only) -------------------
@@ -965,30 +1023,87 @@ THERAPIST_SEED = [
     {"name": "Ms. Abeer", "color": "#8B7BA8", "email": "abeer@boostgrowthsa.com"},
     {"name": "Ms. Najla", "color": "#7BA890", "email": "najla@boostgrowthsa.com"},
     {"name": "Ms. Walaa", "color": "#C28E6A", "email": "walaa@boostgrowthsa.com"},
+    {"name": "Ms. Asma", "color": "#6A7F9B", "email": "asma@boostgrowthsa.com"},
+    {"name": "Ms. Jenan", "color": "#A38B5F", "email": "jenan@boostgrowthsa.com"},
 ]
 
 CLIENT_SEED = [
-    {"file_no":"009","name":"Saleh Ahusainy","main":"Ms. Waad","co":["Ms. Manal","Ms. Fahda"],"pkg":24,"sup":"Ms. Fahda","color":"#FFE599","locs":[{"service":"SS","address":"Alnakeel - Home Sweet Home"},{"service":"HS","address":"Alnakheel - 1st floor, apartment #7"}]},
+    {"file_no":"009","name":"Saleh Ahusainy","main":"Ms. Waad","co":["Ms. Manal","Ms. Fahda"],"pkg":24,"sup":"Ms. Fahda","color":"#FFE599","locs":[{"service":"SS","address":"Alnakeel - Home Sweet Home"},{"service":"HS","address":"Alnakheel - 1st floor, apartment #7"},{"service":"HS","address":"Grandmother house"}]},
     {"file_no":"011","name":"Fahad Alyahya","main":"Ms. Alhanouf","co":["Ms. Fahda"],"pkg":24,"sup":"Ms. Fahda","color":"#A2C4C9","locs":[{"service":"HS","address":"Alyasmin - house no 3075"},{"service":"SS","address":"Talat School"}]},
-    {"file_no":"024","name":"Abdulaziz Alrasheed","main":"Ms. Shatha","co":["Ms. Manal","Ms. Hajer"],"pkg":24,"sup":"Ms. Fahda","color":"#D5A6BD","locs":[{"service":"HS","address":"Alnada - Building #26, 3rd floor, apartment #23"}]},
-    {"file_no":"027","name":"Mohammed Alaqel","main":"Ms. Rahaf","co":["Ms. Fahda"],"pkg":24,"sup":"Ms. Fahda","color":"#E6B8AF","locs":[{"service":"HS","address":"AlMalqa - 331"},{"service":"SS","address":"Education & Skills International Schools"}]},
-    {"file_no":"034","name":"Aljouhrah Alduailij","main":"Ms. Fahda","co":[],"pkg":24,"sup":"Ms. Fahda","color":"#B4A7D6","locs":[{"service":"SS","address":"Alnakheel - Talat School"}]},
-    {"file_no":"035","name":"Saad Alghamdi","main":"Ms. Fatimah","co":["Ms. Hajer","Ms. Shatha"],"pkg":24,"sup":"Ms. Maha","color":"#D9EAD3","locs":[{"service":"SS","address":"Al Motaqdimah Schools"},{"service":"HS","address":"Al Aqiq - House in the corner"}]},
-    {"file_no":"038","name":"Salman Alrasheed","main":"Ms. Manal","co":["Ms. Fahda"],"pkg":24,"sup":"Ms. Maha","color":"#B6D7A8","locs":[{"service":"SS","address":"Stars of Knowledge School"},{"service":"HS","address":"Alnada - Building #26, 3rd floor, apartment #23"}]},
-    {"file_no":"040","name":"Abdulaziz AlAbdulwahab","main":"Ms. Fatimah","co":["Ms. Fahda","Ms. Hajer"],"pkg":24,"sup":"Ms. Maha","color":"#FCE5CD","locs":[{"service":"HS","address":"Alraed - house no 8188"}]},
-    {"file_no":"041","name":"Ameerah Alshehri","main":"Ms. Fahda","co":["Ms. Fatimah"],"pkg":24,"sup":"Ms. Maha","color":"#F4CCCC","locs":[{"service":"HS","address":"Roshen - Villa 277"}]},
-    {"file_no":"042","name":"Sultan Aldamer","main":"Ms. Shrooq","co":["Ms. Rahaf","Ms. Manal"],"pkg":24,"sup":"Ms. Maha","color":"#6FA8DC","locs":[{"service":"SS","address":"Bright Mind School"},{"service":"HS","address":"Alhada - No house number"}]},
-    {"file_no":"047","name":"Alwaleed Alotaibi","main":"Ms. Hajer","co":["Ms. Alhanouf"],"pkg":24,"sup":"Ms. Maha","color":"#EA9999","locs":[{"service":"HS","address":"Alqairawan - house no 10"},{"service":"SS","address":"Al Motaqdimah Schools"}]},
-    {"file_no":"052","name":"Sulaiman Alkhurashi","main":"Ms. Rahaf","co":["Ms. Maha"],"pkg":24,"sup":"Ms. Maha","color":"#FFE599","locs":[{"service":"HS","address":"Alsulaimanyah - house no 24"}]},
-    {"file_no":"054","name":"Omar Alkhurashi","main":"Ms. Manal","co":["Ms. Maha"],"pkg":24,"sup":"Ms. Maha","color":"#B4A7D6","locs":[{"service":"HS","address":"Alsulaimanyah - house no 24"}]},
-    {"file_no":"060","name":"Mohammed Albedayea","main":"Ms. Bodoor","co":["Ms. Shatha"],"pkg":24,"sup":"Ms. Maha","color":"#F9CB9C","locs":[{"service":"HS","address":"Alyasmin - Home no 14"},{"service":"SS","address":"Yas School"}]},
-    {"file_no":"061","name":"Ibrahim Alnasir","main":"Ms. Rahaf","co":["Ms. Fahda"],"pkg":24,"sup":"Ms. Fahda","color":"#D0E0E3","locs":[{"service":"HS","address":"Alyasmin - Home no 39"},{"service":"SS","address":"Alnakheel - Talat School"}]},
+    {"file_no":"018","name":"Layan AlSaud","main":"Ms. Jenan","co":[],"pkg":24,"sup":"Ms. Jenan","color":"#C9DAF8","locs":[{"service":"ABA","address":"Alaqiq"}]},
+    {"file_no":"023","name":"Yahya Alqahtani","main":"Ms. Hajer","co":["Ms. Manal"],"pkg":24,"sup":"Ms. Fahda","color":"#D5A6BD","locs":[{"service":"HS","address":"Alaarid"}]},
+    {"file_no":"024","name":"Abdulaziz Alrasheed","main":"Ms. Shatha","co":["Ms. Manal","Ms. Hajer"],"pkg":24,"sup":"Ms. Fahda","color":"#E6B8AF","locs":[{"service":"HS","address":"Alnada - Building #26, 3rd floor, apartment #23"}]},
+    {"file_no":"027","name":"Mohmmed Alaqel","main":"Ms. Rahaf","co":["Ms. Fahda"],"pkg":24,"sup":"Ms. Fahda","color":"#FFF2CC","locs":[{"service":"HS","address":"AlMalqa - 331"}]},
+    {"file_no":"030","name":"Husam Alturaigy","main":"Ms. Manal","co":["Ms. Shatha"],"pkg":24,"sup":"Ms. Fahda","color":"#B4A7D6","locs":[{"service":"SS","address":"Whales of the future daycare"},{"service":"HS","address":"Alwaha - Home #4B"}]},
+    {"file_no":"034","name":"Aljouhrah Alduailij","main":"Ms. Asma","co":["Ms. Fahda"],"pkg":24,"sup":"Ms. Fahda","color":"#D9EAD3","locs":[{"service":"SS","address":"Alnakheel - Talat School"}]},
+    {"file_no":"035","name":"Saad Alghamdi","main":"Ms. Shatha","co":["Ms. Hajer","Ms. Fatimah"],"pkg":24,"sup":"Ms. Maha","color":"#B6D7A8","locs":[{"service":"HS","address":"Al Aqiq - House in the corner"},{"service":"SS","address":"Al Motaqdimah Schools"}]},
+    {"file_no":"037","name":"Suzan Alsultan","main":"Ms. Asma","co":[],"pkg":24,"sup":"Ms. Maha","color":"#FCE5CD","locs":[{"service":"HS","address":"King Fahad - Villa 1308"}]},
+    {"file_no":"038","name":"Salman Alrasheed","main":"Ms. Manal","co":["Ms. Fahda"],"pkg":24,"sup":"Ms. Maha","color":"#F4CCCC","locs":[{"service":"SS","address":"Summer Camp - Stars of Knowledge School"},{"service":"HS","address":"Alnada - Building #26, 3rd floor, apartment #23"}]},
+    {"file_no":"040","name":"Abdulaziz AlAbdulwahab","main":"Ms. Fatimah","co":["Ms. Fahda","Ms. Hajer"],"pkg":24,"sup":"Ms. Maha","color":"#6FA8DC","locs":[{"service":"HS","address":"Alraed - house no 8188"}]},
+    {"file_no":"041","name":"Ameerah Alshehri","main":"Ms. Fahda","co":["Ms. Fatimah"],"pkg":24,"sup":"Ms. Maha","color":"#EA9999","locs":[{"service":"HS","address":"Roshen - Villa 277"}]},
+    {"file_no":"042","name":"Sultan Aldamer","main":"Ms. Shrooq","co":["Ms. Rahaf"],"pkg":24,"sup":"Ms. Maha","color":"#FFE599","locs":[{"service":"SS","address":"Bright Mind School"},{"service":"HS","address":"Alhada - No house number"}]},
+    {"file_no":"047","name":"Alwaleed Alotaibi","main":"Ms. Hajer","co":["Ms. Alhanouf"],"pkg":24,"sup":"Ms. Maha","color":"#B4A7D6","locs":[{"service":"HS","address":"Alqairawan - house no 10"},{"service":"SS","address":"Al Motaqdimah Schools"}]},
+    {"file_no":"052","name":"Sulaiman Alkhurashi","main":"Ms. Rahaf","co":["Ms. Maha"],"pkg":24,"sup":"Ms. Maha","color":"#F9CB9C","locs":[{"service":"HS","address":"Alsulaimanyah - house no 24"}]},
+    {"file_no":"054","name":"Omar Alkhurashi","main":"Ms. Manal","co":["Ms. Maha"],"pkg":24,"sup":"Ms. Maha","color":"#D0E0E3","locs":[{"service":"HS","address":"Alsulaimanyah - house no 24"}]},
+    {"file_no":"060","name":"Mohammed Albedayea","main":"Ms. Bodoor","co":["Ms. Shatha"],"pkg":24,"sup":"Ms. Maha","color":"#D9EAD3","locs":[{"service":"HS","address":"Alyasmin - Home no 14"},{"service":"SS","address":"Yas School"}]},
+    {"file_no":"061","name":"Ibrahim Alnasir","main":"Ms. Rahaf","co":["Ms. Fahda"],"pkg":24,"sup":"Ms. Fahda","color":"#D9D2E9","locs":[{"service":"HS","address":"Alyasmin - Home no 39"},{"service":"SS","address":"Alnakheel - Talat School"}]},
     {"file_no":"062","name":"Lulu Almutair","main":"Ms. Razan","co":["Ms. Fahda"],"pkg":24,"sup":"Ms. Fahda","color":"#D5A6BD","locs":[{"service":"HS","address":"Almuroj - Home no 4"},{"service":"SS","address":"Alnakheel - Talat School"}]},
-    {"file_no":"063","name":"Amani Ghaith","main":"Ms. Maha","co":[],"pkg":24,"sup":"Ms. Maha","color":"#A2C4C9","locs":[{"service":"HS","address":"Alnakheel"}]},
-    {"file_no":"068","name":"Abdulrahman Alshawi","main":"Ms. Razan","co":["Ms. Fahda"],"pkg":24,"sup":"Ms. Fahda","color":"#D9EAD3","locs":[{"service":"HS","address":"AR Rayan - Home no 32"},{"service":"SS","address":"Kindergarten of KSU"}]},
-    {"file_no":"070","name":"Abdulelah Almuhana","main":"Ms. Abeer","co":["Ms. Maha"],"pkg":24,"sup":"Ms. Maha","color":"#D9D2E9","locs":[{"service":"SS","address":"Manarat Ar Riyadh"}]},
-    {"file_no":"072","name":"Khalid Bin Shuael","main":"Ms. Shatha","co":["Ms. Fahda"],"pkg":24,"sup":"Ms. Fahda","color":"#FFF2CC","locs":[{"service":"HS","address":"AlMursalat"}]},
+    {"file_no":"063","name":"Amani Ghaith","main":"Ms. Maha","co":[],"pkg":24,"sup":"Ms. Maha","color":"#FFF2CC","locs":[{"service":"HS","address":"Alnakheel"}]},
+    {"file_no":"065","name":"Aser Alharbi","main":"Ms. Najla","co":["Ms. Maha"],"pkg":24,"sup":"Ms. Maha","color":"#F4CCCC","locs":[{"service":"HS","address":"Al Izdihar - First floor - House no 15"}]},
+    {"file_no":"068","name":"Abdulrahman Alshawi","main":"Ms. Razan","co":["Ms. Fahda"],"pkg":24,"sup":"Ms. Fahda","color":"#C9DAF8","locs":[{"service":"HS","address":"AR Rayan - Home no 32"},{"service":"SS","address":"Kindergarten of KSU"}]},
+    {"file_no":"070","name":"Abdulelah Almuhana","main":"Ms. Abeer","co":["Ms. Maha"],"pkg":24,"sup":"Ms. Maha","color":"#CFE2F3","locs":[{"service":"SS","address":"Manarat Ar Riyadh"}]},
+    {"file_no":"072","name":"Khalid Bin Shuael","main":"Ms. Shatha","co":["Ms. Fahda"],"pkg":24,"sup":"Ms. Fahda","color":"#EAD1DC","locs":[{"service":"HS","address":"AlMursalat"}]},
 ]
+
+# ------------------- Intake Seed (from Waiting_List_v4.xlsx) -------------------
+INTAKE_SEED = [
+    # Pre-Intake
+    {"intake_type":"pre","child_name":"Reema Idrees","service":"HS","phone":"546272994","district":"Iraqi","age":"2021","time_pref":"Morning","diagnosis":"PWS"},
+    {"intake_type":"pre","child_name":"Abdulaziz Alrajab","service":"HS","phone":"500252211","district":"Al Malqa","age":"2023","time_pref":"Any","diagnosis":"NA","notes":"Online CONCL"},
+    {"intake_type":"pre","child_name":"Mansour","service":"HS","phone":"507247881","district":"Alyasmeen","age":"2022","time_pref":"Any","diagnosis":"Speech delay"},
+    {"intake_type":"pre","child_name":"Leen","service":"SS","phone":"503225528","district":"Al Raed","age":"2010","time_pref":"Morning","diagnosis":"NA","notes":"3 hours at school"},
+    {"intake_type":"pre","child_name":"Ebrahim Alnami","service":"SS","phone":"564443542","district":"Alsulimania","age":"2022","time_pref":"Morning","diagnosis":"Premature - 29 weeks"},
+    {"intake_type":"pre","child_name":"Naif Alblawi","service":"HS","phone":"535544260","district":"Qurtubah","age":"2020","time_pref":"Evening","diagnosis":"ADHD"},
+    {"intake_type":"pre","child_name":"Saad Alajaji","service":"HS","phone":"555955342","district":"AL-Suwaidi","age":"2021","time_pref":"Evening","diagnosis":"NA"},
+    {"intake_type":"pre","child_name":"Reema Alotaibi","service":"HS","phone":"503553339","district":"AlArid","time_pref":"Evening","diagnosis":"Speech delay"},
+    {"intake_type":"pre","child_name":"Waseem Aljohani","service":"HS / SS","phone":"594744884","district":"Alnarjis","age":"2019","diagnosis":"ADHD","notes":"DR.Turki"},
+    {"intake_type":"pre","child_name":"Faisal Alzghaibi","service":"HS","phone":"966507479800","district":"Alyasmeen","diagnosis":"NA","notes":"Azraq"},
+    {"intake_type":"pre","child_name":"Sultan Abalkhail","service":"HS","phone":"558811313","district":"Al-Mursalat","age":"2019","diagnosis":"NA"},
+    {"intake_type":"pre","child_name":"Sultan Bandar","service":"HS","phone":"555579702","district":"Alyasmeen","age":"2019","time_pref":"Any","diagnosis":"Speech delay - ADHD"},
+    # Post-Intake
+    {"intake_type":"post","child_name":"Mohammed alnoweser","service":"HS","district":"King Fahad","age":"3 year","language":"English"},
+    {"intake_type":"post","child_name":"Mohammed Alofi","service":"HS","phone":"554505400","district":"AlAridh","age":"6","language":"English / Arabic"},
+    {"intake_type":"post","child_name":"Rakan Alaqel","service":"HS","phone":"538154083","district":"Alnarjis","age":"2019","language":"Arabic"},
+    {"intake_type":"post","child_name":"Nawaf Alshweeb","service":"HS","district":"Um Alhamam","age":"5.5","language":"ASD"},
+    {"intake_type":"post","child_name":"Abdulkareem Kaki","service":"HS","language":"Arabic"},
+    {"intake_type":"post","child_name":"Abdulaziz Alzahrani","service":"HS","phone":"555341092","district":"Almalqa","age":"4"},
+    {"intake_type":"post","child_name":"Yazeed Bu sheet","service":"SS","phone":"555009662","district":"Hitter","diagnosis":"Autism"},
+    {"intake_type":"post","child_name":"Omar ALImazrou","service":"HS","phone":"534888855","district":"AlArid","age":"2023","diagnosis":"Autism"},
+    {"intake_type":"post","child_name":"Fahad Suliman","service":"HS","phone":"966500566235","district":"Al-Sahafa","age":"2019","diagnosis":"ADD"},
+    {"intake_type":"post","child_name":"Naif Alwhibi","service":"SS / HS","phone":"506128118","district":"Ar Rabi","age":"2020","diagnosis":"ASD"},
+    {"intake_type":"post","child_name":"Ahmad Alshalfan","service":"SS / HS","phone":"505287407","district":"Almalqa","age":"2020","diagnosis":"ADHD and GDD"},
+    {"intake_type":"post","child_name":"Abdulelah Almuhana","service":"HS","phone":"966 56 554 4999","age":"2021"},
+    {"intake_type":"post","child_name":"Leena Alshahrani","service":"HS","phone":"530511175"},
+]
+
+# ------------------- Directory Seed (Internal Team) -------------------
+DIRECTORY_SEED = [
+    {"name":"Genan Almuhaisen","role":"Direct Manager","phone":"","email":"genan@boostgrowthsa.com"},
+    {"name":"Boost Growth (Main)","role":"Coordinator / General Inquiries","phone":"","email":"hello@boostgrowthsa.com"},
+    {"name":"Ms. Walaa","role":"Operations","phone":"","email":"walaa@boostgrowthsa.com"},
+    {"name":"Ms. Maha","role":"Supervisor","phone":"","email":"maha@boostgrowthsa.com"},
+    {"name":"Ms. Fahdah","role":"Supervisor","phone":"","email":"fahda@boostgrowthsa.com"},
+]
+
+# ------------------- Resources Seed -------------------
+RESOURCES_SEED = [
+    {"title":"Therapist Drive","description":"Session materials · forms · training","url":"https://drive.google.com/drive/folders/1iMDwfucwzsEIl9WxwhJi_h6tg2vVtAFr","visibility":"therapist","icon":"Folders","bg":"#E5EBE1","color":"#3D4F35","sort_order":10},
+    {"title":"Therapist Training Hub","description":"Protocols · lesson plans","url":"https://drive.google.com/drive/folders/1iMDwfucwzsEIl9WxwhJi_h6tg2vVtAFr","visibility":"therapist","icon":"Notebook","bg":"#EAF0F3","color":"#375568","sort_order":20},
+    {"title":"Client Files","description":"Per-client folders","url":"https://drive.google.com/drive/folders/1iMDwfucwzsEIl9WxwhJi_h6tg2vVtAFr","visibility":"admin","icon":"Folders","bg":"#FAF0D1","color":"#6B5218","sort_order":30},
+    {"title":"HR Files","description":"Employees · Contracts","url":"https://drive.google.com/drive/folders/1jWRO97gDHK_TfmZhTqCqm0SdBc6_b5bE","visibility":"admin","icon":"Files","bg":"#F1ECF7","color":"#4E3F70","sort_order":40},
+    {"title":"Company Policies","description":"Internal policies & SOPs","url":"https://drive.google.com/drive/folders/11VQQ-o1QoDQV-ktygB1tlnRmqCs3mxAb","visibility":"all","icon":"Notebook","bg":"#F4E7D8","color":"#8B6918","sort_order":50},
+]
+
 
 @app.on_event("startup")
 async def startup():
@@ -1023,9 +1138,11 @@ async def startup():
             })
         logger.info(f"Seeded {len(THERAPIST_SEED)} therapists with PIN=0000")
 
-    # Re-seed clients with full info
+    # Re-seed clients with full info (force re-seed if seed data changed — track version)
+    seed_meta = await db.meta.find_one({"key": "client_seed_version"})
+    CURRENT_SEED_VERSION = 6  # bump when CLIENT_SEED changes
     cl_count = await db.clients.count_documents({})
-    if cl_count != len(CLIENT_SEED):
+    if cl_count != len(CLIENT_SEED) or not seed_meta or seed_meta.get("version") != CURRENT_SEED_VERSION:
         await db.clients.delete_many({})
         therapists_map = {t["name"]: t["id"] async for t in db.therapists.find({}, {"_id": 0, "name": 1, "id": 1})}
         for c in CLIENT_SEED:
@@ -1039,7 +1156,41 @@ async def startup():
                 "parent_name": None, "parent_phone": None, "age": None,
                 "notes": None, "created_at": now_iso(),
             })
-        logger.info(f"Seeded {len(CLIENT_SEED)} clients with full info")
+        await db.meta.update_one({"key": "client_seed_version"},
+                                 {"$set": {"version": CURRENT_SEED_VERSION, "updated_at": now_iso()}},
+                                 upsert=True)
+        logger.info(f"Seeded {len(CLIENT_SEED)} clients (v{CURRENT_SEED_VERSION}) with accurate multi-service info")
+
+    # Seed Intake (only if empty — admin may manage manually)
+    if await db.intake.count_documents({}) == 0:
+        for item in INTAKE_SEED:
+            await db.intake.insert_one({
+                "id": str(uuid.uuid4()),
+                "status": "new",
+                "priority": False,
+                "created_at": now_iso(),
+                **item,
+            })
+        logger.info(f"Seeded {len(INTAKE_SEED)} intake records from waiting list")
+
+    # Seed Directory (only if empty)
+    if await db.directory.count_documents({}) == 0:
+        for item in DIRECTORY_SEED:
+            await db.directory.insert_one({
+                "id": str(uuid.uuid4()), **item, "created_at": now_iso(),
+            })
+        logger.info(f"Seeded {len(DIRECTORY_SEED)} directory contacts")
+
+    # Seed Resources (only if empty)
+    if await db.resources.count_documents({}) == 0:
+        for item in RESOURCES_SEED:
+            await db.resources.insert_one({
+                "id": str(uuid.uuid4()),
+                "category": "drive",
+                **item,
+                "created_at": now_iso(),
+            })
+        logger.info(f"Seeded {len(RESOURCES_SEED)} resources")
 
 @app.on_event("shutdown")
 async def shutdown():
