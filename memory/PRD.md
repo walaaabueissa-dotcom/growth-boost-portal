@@ -1,101 +1,86 @@
 # Boost Growth Staff Portal — PRD
 
 ## Original Problem Statement
-ABA therapy center staff portal — replace existing Claude/Base44-built portal with a more professional, practical version. Brand colors from boost-growthsa.com (sage / cream / gold).
+ABA therapy center staff portal — replace existing Claude/Base44-built portal with a more
+professional, practical version. English UI · sage/cream/gold brand · LTR · Top Nav.
+Custom dashboards for Admin and Therapist roles.
 
 ## Architecture
 - Backend: FastAPI + MongoDB + JWT (PyJWT) + bcrypt
 - Frontend: React 19 + React Router 7 + Tailwind 3 + Phosphor Icons + Axios
 - Auth: admin (email+password) + therapist (PIN keypad)
-- Data seeded from Base44 source (THERAPISTS_LIST, CLIENTS_LIST, CLIENT_DETAILS, SC_COLORS)
+- Real data sourced from `Clients' Info.xlsx`, `Waiting_List_v4.xlsx`,
+  `Therapists' Schedule.xlsx`
 
-## What's Been Implemented (May 2026)
+## What's Been Implemented
 
-### v1 — initial MVP
-- ✅ Auth (admin + therapist PIN), JWT cookie + Bearer fallback
-- ✅ Schedule, Attendance (file upload), Clients basic, Intake, Requests, Directory, Resources, Admin
+### v1 → v4 (recap)
+- Auth, Schedule, Attendance, Clients, Intake, Requests, Directory, Resources, Admin
+- Top nav, English LTR, Notification bell, mobile drawer
+- Cell merging (duration), per-child auto colors, right-click context menu, zoom, print
+- Reports & Analytics dashboard
+- Clients/Intake CSV import, Historical schedule loader
+- Cancellation colors (Therapist=Yellow, Client=Pink)
+- Brand logo integrated in Login + Home + Top nav + Attendance Sheet
+- Schedule xlsx import (4748 cells), Duplicate Week, Sheet Preview
 
-### v2 — English + Top Nav
-- ✅ Full English UI (LTR), DM Sans + Playfair Display fonts
-- ✅ Top navigation sticky with notification bell, mobile drawer
-- ✅ Schedule per-therapist blocks (5 days × 10 times), 9 service codes, cell states (normal / cancel_therapist 🩷 / cancel_child 🟡)
-- ✅ Right-click context menu, zoom 70-140%, print
-- ✅ Requests redesigned: 3-step wizard (Type → Details → Review), reward types, timeline of events
-- ✅ Seed: 13 therapists (PIN=0000) + initial 21 clients
+### v6 — Feb 2026 (current session) ✅
+- **Real client data seeded**: 25 unique clients parsed from `Clients' Info.xlsx`,
+  with accurate **multi-service multi-location** data (e.g., Saleh #009 = SS + 2× HS,
+  Salman #038 = SS + HS, Abdulrahman #068 = HS + SS).
+- **2 new therapists**: Ms. Asma, Ms. Jenan (real coverage from spreadsheet).
+- **Real intake data**: 25 records (12 Pre-Intake + 13 Post-Intake) seeded from
+  `Waiting_List_v4.xlsx` with new fields: service, district, age, time_pref/language,
+  diagnosis, priority.
+- **Schedule "Sheet" view (default)** matching the Google Sheets layout exactly:
+  `# | Therapist (rowSpan=5) | Day | 10 time-slot columns`. Plus existing Per-Therapist
+  and By-Day views as alternatives.
+- **Resources page** rebuilt: backend `resources` collection with visibility filter
+  (therapist / admin / all). Admin sees grouped sections; therapists see only filtered
+  resources. Full admin CRUD.
+- **Directory editable**: PUT endpoint added; cards have edit pencil + role badges.
+  Seeded 5 internal contacts (Genan, Boost Growth, Walaa, Maha, Fahdah).
+- **Home KPI fixed**: Shows current-week scheduled hours/sessions instead of
+  cumulative schedule cells.
+- Backend tests: 17/17 pytest passing.
 
-### v3 — Base44 Parity
-- ✅ Fixed schedule click bug (e.stopPropagation in handler)
-- ✅ Schedule view toggle: "Per Therapist" blocks vs "All Therapists" master grid (with day tabs)
-- ✅ Per-child color in schedule cells (CHILD_COLORS map matching Base44 SC_COLORS)
-- ✅ Attendance rebuilt Base44-style:
-  - Log Session form: Status grid (Completed/No Service/Cancelled/No Show), date+start+end (auto-compute hours), multi-select therapists, location dropdown (from client.locations)
-  - Client cards with progress bar, Pkg/Used/Remaining, status (🔴 urgent / 🟡 warning / 🟢 ok)
-  - Filter pills, search by name/file#
-  - History modal as invoice sheet with paginated sessions, edit/delete inline
-- ✅ Clients: full info — file_no, color stripe, supervisor, main + co therapists, multi-locations (HS/SS pills), package hours
-- ✅ Intake hidden from therapists (admin-only nav + 403 server-side)
-- ✅ Re-seeded: 13 therapists + 20 clients with FULL info from Base44 source (file_no, locations, color, main+co)
-- ✅ Backend Session model + CRUD endpoints with therapist-filter
-
-### v4 — Reports + Imports + Notifications + Cell Merging
-- ✅ **Reports & Analytics page** (`/reports`, admin-only): 8 stat tiles (therapists, clients, sessions, hours, open requests, urgent/warning clients, cancellations), Per-Therapist Performance card (sorted by completed sessions), Client Hours Status card (sorted urgent → warning → ok)
-- ✅ **Import page** (`/import`, admin-only): 3 tabs
-  - Clients CSV/Excel upload (name, file_no, package_hours, supervisor, parent_name, phone, color, age, notes, main_therapist)
-  - Intake CSV/Excel upload (child_name, parent_name, phone, intake_type, status, intake_date, age, notes)
-  - Historical Schedules loader (loads 2 weeks of Base44 SCHED_DATA from `/app/backend/historical_schedules.json`, parses service codes/child names, supports clear-existing toggle)
-- ✅ **Cell merging in Schedule**: `duration` field 1-4 slots, rendered via `colSpan`. Edit modal has Duration dropdown.
-- ✅ **PDF print of Attendance invoice**: Print/PDF button in History modal triggers `window.print()` with print-only CSS (`.printable` visible, `.no-print` hidden)
-- ✅ **Expanded Notifications**:
-  - Admin gets notification when therapist submits new request (via `_notify_admins`)
-  - Admin gets notification when therapist logs a session (with status)
-  - Admin gets cancellation alert when session is Cancelled or No Show
-  - Admin gets low-hours alert (≤4h remaining or exhausted package)
-  - Admin gets schedule cancellation alert when state set to cancel_therapist or cancel_child
-
-### v5 — Schedule xlsx Import + Duplicate Week + Sheet Preview + Logo
-- ✅ **Schedule Excel import**: parses user's actual `Therapists' Schedule.xlsx` format (header row → 5 day rows with 10 time slots), auto-detects therapists, service codes (SS/HS/OS/Meeting/Supervision/Observation/AVC/Leave/Break), child names after `|` or `W/`, custom times in `(...)`. Tested: imported 4,748 cells from real file.
-- ✅ **Duplicate Week button** (gold, top right of Schedule): copies entire week's cells to any target date (default = next Sunday). Optional clear-target. Tested: 4,748 cells copied in <2s.
-- ✅ **Cancellation colors swapped per user**: Therapist cancellation = YELLOW 🟡, Client cancellation = PINK 🩷
-- ✅ **Re-added Najla & Walaa** (back to 15 therapists)
-- ✅ **Co-therapist dropdown** in Log Session: chosen therapists shown as colored pills with × to remove; dropdown to add more
-- ✅ **Attendance Sheet Preview** matching user's xlsx exactly: header (Logo + Boost Growth title + CLOSED/OPEN status with closure date), patient info row (Name, File NO., # Paid Sessions, 24H Days), table grouped by day-of-week (Sunday→Thursday) with rowSpan day labels, columns: Date, Status, Time, # of Hrs, Therapist, Note. Footer: Total Delivered, Total No-Show, Total Counted, Hours Remaining. Print-ready PDF.
-- ✅ **Brand logo integrated**: replaces Leaf/Plant icons in Login hero, Home hero, Top nav, and Attendance Sheet header. Logo PNG from user (`bg-logo.png`) loaded as floating decoration.
-
-### Test Status
-- v5 backend: 43/43 pytest pass + new endpoints tested manually (schedule-excel import, duplicate-week)
-- Frontend visually verified: login + home + schedule + duplicate week button + legend colors
+### Test Status (Feb 2026)
+- Backend: 17/17 pytest pass (100%)
+- Frontend: All 7 admin flows verified via Playwright self-test (Home, Schedule
+  Sheet/Per-Therapist/By-Day, Clients, Intake, Resources grouped, Directory)
 
 ## Test Credentials
-- Admin: `admin@boost-growthsa.com` / `BoostAdmin@2026`
-- 13 therapists: PIN `0000`
+See `/app/memory/test_credentials.md`
 
 ## Backlog — Prioritized
 
 ### P1 (next session)
-- SendGrid/Resend email notifications (user said "بعدين أشترك")
-- Pre-fill schedule with the historical data from Base44 (SCHED_DATA — 17 weeks Jan-Apr 2026)
-- Excel/PDF export of attendance invoice from History modal (currently displays only)
-- Excel import for bulk clients/intake upload
+- SendGrid/Resend email notifications (user said "بعدين أشترك" — defer)
+- WhatsApp via Twilio (user requested for a future iteration)
+- Excel/PDF export of attendance invoice (currently print-only)
 - Drag-drop schedule cells across slots
-- Cell merging in schedule (admin requested in original message)
+- Pre-fill schedule with historical data from Base44 (SCHED_DATA — 17 weeks Jan-Apr 2026)
+- Therapist resources Drive link — verify exact URL with user
+- Clients: editable package_hours per child (currently default 24)
+- Inactive Clients tab + archived view
 
 ### P2
-- Reports dashboard (sessions per therapist, cancellation %, attendance %)
-- Bulk "copy entire week" for schedule
-- Excel preview rendering in sheet viewer
 - Therapist-of-the-month widget
 - Mobile PWA + push notifications
 - Parent-portal share link
+- Sessions per therapist analytics, cancellation %
 
 ### P3 (security/hardening)
 - Brute-force lockout on auth endpoints (5 fails)
-- Tighten CORS to explicit origins (instead of *)
-- Add session-creation guard for therapists (must be assigned to client)
-- Role-based privacy on Schedule master-view (therapists currently see other therapists' notes — review with user)
+- Tighten CORS to explicit origins
+- Refactor server.py into routers/models/seed (currently 1198 lines)
+- Switch from `@app.on_event("startup")` to FastAPI lifespan context
 
 ## Tech Notes
-- Time slots: '8:00 AM - 9:00 AM' format (10 slots)
+- Time slots: '8:00 AM - 9:00 AM' format (10 slots, 8am→6pm)
 - Days: Sunday → Thursday (5 working days, index 0-4)
-- Auto re-seed when therapist count or client count mismatches expected
+- Auto re-seed via meta version bump (`client_seed_version=6`)
 - File uploads: /app/backend/uploads/{sid}{ext}
-- MongoDB indexes: users.email (unique), therapists.id, schedule_cells (week_start, therapist_id), notifications.user_id, sessions (client_id, session_date desc)
+- MongoDB indexes: users.email (unique), therapists.id, schedule_cells (week_start,
+  therapist_id), notifications.user_id, sessions (client_id, session_date desc)
+- Resources visibility: `therapist` | `admin` | `all`
