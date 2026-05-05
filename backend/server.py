@@ -802,6 +802,17 @@ class EmailSettingsIn(BaseModel):
     resend_api_key: Optional[str] = None
     from_email: Optional[str] = None
 
+@api.post("/admin/email-test-send")
+async def email_test_send(payload: dict, _=Depends(admin_only)):
+    """Test send to a target email. Returns clear error if Resend rejects."""
+    to = (payload.get("to") or "").strip()
+    if not to:
+        raise HTTPException(status_code=400, detail="Recipient email required")
+    result = await _send_email_stub(to,
+        "Boost Growth — Test Email",
+        "This is a test email from your Boost Growth Portal.\n\nIf you received this, email notifications are working correctly.\n\n— Boost Growth Portal")
+    return result
+
 @api.get("/admin/email-settings")
 async def get_email_settings(_=Depends(admin_only)):
     doc = await db.settings.find_one({"key": "email"}, {"_id": 0}) or {}

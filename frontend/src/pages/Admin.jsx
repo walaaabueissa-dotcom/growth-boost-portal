@@ -9,6 +9,8 @@ export default function Admin() {
   const [editEmail, setEditEmail] = useState(false);
   const [emailForm, setEmailForm] = useState({ resend_api_key: "", from_email: "" });
   const [emailQueue, setEmailQueue] = useState([]);
+  const [testTo, setTestTo] = useState("");
+  const [testResult, setTestResult] = useState(null);
 
   const load = async () => {
     const [t, e, q] = await Promise.all([
@@ -28,8 +30,24 @@ export default function Admin() {
     if (emailForm.resend_api_key) payload.resend_api_key = emailForm.resend_api_key;
     if (emailForm.from_email) payload.from_email = emailForm.from_email;
     if (Object.keys(payload).length === 0) { alert("Provide API key or From email"); return; }
-    await api.post("/admin/email-settings", payload);
-    setEditEmail(false); load();
+    try {
+      await api.post("/admin/email-settings", payload);
+      setEditEmail(false); load();
+    } catch (e) {
+      alert("Save failed: " + (e.response?.data?.detail || e.message));
+    }
+  };
+
+  const sendTest = async () => {
+    if (!testTo) return;
+    setTestResult({ status: "sending" });
+    try {
+      const r = await api.post("/admin/email-test-send", { to: testTo });
+      setTestResult(r.data);
+      load();
+    } catch (e) {
+      setTestResult({ status: "failed", error: e.response?.data?.detail || e.message });
+    }
   };
 
   const save = async () => {
@@ -87,9 +105,17 @@ export default function Admin() {
             <PencilSimple size={14} /> {editEmail ? "Cancel" : "Configure"}
           </button>
         </div>
+        <div className="text-xs mb-3 px-3 py-2 rounded-lg" style={{ background: "#FAF0D1", color: "#6B5218" }}>
+          <strong>⚠️ Resend Test Mode</strong> — While using <code>onboarding@resend.dev</code> as From, you can ONLY send emails to the address you registered with at Resend. To send to all therapists' work emails:
+          <ol className="list-decimal pl-5 mt-1.5">
+            <li>Go to <a href="https://resend.com/domains" target="_blank" rel="noreferrer" className="underline font-bold">resend.com/domains</a> → Add Domain → <code>boostgrowthsa.com</code></li>
+            <li>Add the 3 DNS records Resend gives you</li>
+            <li>Wait for verification (10 min – 24 h)</li>
+            <li>Then change "From Email" below to <code>noreply@boostgrowthsa.com</code></li>
+          </ol>
+        </div>
         <div className="text-xs mb-3" style={{ color: "#5C6853" }}>
-          When configured, cancellation alerts and key notifications will be emailed automatically. Get your API key at{" "}
-          <a href="https://resend.com/api-keys" target="_blank" rel="noreferrer" className="underline" style={{ color: "#7A8A6A" }}>resend.com/api-keys</a> (3,000 emails free / month).
+          Get/manage keys: <a href="https://resend.com/api-keys" target="_blank" rel="noreferrer" className="underline" style={{ color: "#7A8A6A" }}>resend.com/api-keys</a>
         </div>
         {editEmail ? (
           <div className="grid grid-cols-2 gap-3">
@@ -112,6 +138,32 @@ export default function Admin() {
             <div><span style={{ color: "#8B9E7A" }}>From:</span> <span style={{ color: "#2C3625" }}>{emailSettings.from_email}</span></div>
           </div>
         )}
+
+        {/* Test send */}
+        <div className="mt-4 pt-4 border-t" style={{ borderColor: "#E8E4DE" }}>
+          <div className="text-[11px] tracking-widest mb-2" style={{ color: "#8B9E7A" }}>SEND A TEST EMAIL</div>
+          <div className="flex gap-2 flex-wrap">
+            <input data-testid="test-email-input" className="input flex-1 text-sm" placeholder="recipient@example.com" value={testTo} onChange={e=>setTestTo(e.target.value)} />
+            <button data-testid="send-test-email-btn" onClick={sendTest} disabled={!testTo || testResult?.status==="sending"} className="btn btn-primary text-sm disabled:opacity-50">
+              {testResult?.status === "sending" ? "Sending..." : "Send Test"}
+            </button>
+          </div>
+          {testResult && testResult.status !== "sending" && (
+            <div className="mt-2 text-xs px-3 py-2 rounded-lg" style={{
+              background: testResult.status === "sent" ? "#E5EBE1" : "#FCE0E8",
+              color: testResult.status === "sent" ? "#3D4F35" : "#8B3A55"
+            }}>
+              {testResult.status === "sent" ? (
+                <>✅ <b>Email sent successfully!</b> Provider ID: <code>{testResult.provider_id}</code>. Check inbox of <b>{testResult.to}</b>.</>
+              ) : (
+                <>❌ <b>Failed:</b> <code>{testResult.error || JSON.stringify(testResult)}</code><br/>
+                {(testResult.error || "").includes("testing emails") && <span className="block mt-1">💡 In test mode you can only send to your Resend-registered email. Verify your domain to send to others.</span>}
+                {(testResult.error || "").includes("not verified") && <span className="block mt-1">💡 Domain not verified. Use <code>onboarding@resend.dev</code> as From, or verify your domain at resend.com/domains.</span>}
+                </>
+              )}
+            </div>
+          )}
+        </div>
         {emailQueue.length > 0 && (
           <div className="mt-4 pt-4 border-t" style={{ borderColor: "#E8E4DE" }}>
             <div className="text-[11px] tracking-widest mb-2" style={{ color: "#8B9E7A" }}>RECENT EMAIL ACTIVITY ({emailQueue.length})</div>

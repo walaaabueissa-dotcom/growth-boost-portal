@@ -52,6 +52,7 @@ export default function Schedule() {
   const [showDup, setShowDup] = useState(false);
   const [dupTarget, setDupTarget] = useState(null);
   const [dupClear, setDupClear] = useState(false);
+  const [clipboard, setClipboard] = useState(null);  // copied cell content
 
   const weekStartISO = toISODate(weekStart);
 
@@ -77,6 +78,12 @@ export default function Schedule() {
     if (ctxMenu) document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [ctxMenu]);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") setClipboard(null); };
+    if (clipboard) window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [clipboard]);
 
   const cellMap = useMemo(() => {
     const m = {};
@@ -108,8 +115,31 @@ export default function Schedule() {
   const handleCellClick = (e, therapist_id, day, time_slot, existing) => {
     if (e) e.stopPropagation();
     if (!isAdmin) return;
+    // If clipboard is set and the target slot is empty, paste it
+    if (clipboard && !existing) {
+      const payload = {
+        therapist_id, day, time_slot, week_start: weekStartISO,
+        service_code: clipboard.service_code,
+        child_name: clipboard.child_name,
+        custom_time: clipboard.custom_time,
+        note: clipboard.note,
+        duration: clipboard.duration || 1,
+        state: "normal",
+        color: clipboard.color || null,
+      };
+      api.post("/schedule", payload).then(load);
+      return;
+    }
     setEdit(existing ? { ...existing }
       : { therapist_id, day, time_slot, service_code: "SS", child_name: "", state: "normal", week_start: weekStartISO, color: null });
+  };
+
+  const copyCell = (cell) => {
+    setClipboard({
+      service_code: cell.service_code, child_name: cell.child_name,
+      custom_time: cell.custom_time, note: cell.note,
+      duration: cell.duration || 1, color: cell.color,
+    });
   };
 
   const save = async () => {
@@ -164,14 +194,14 @@ export default function Schedule() {
   const renderSheet = () => (
     <div className="card p-0 overflow-hidden">
       <div className="overflow-x-auto">
-        <table className="text-xs border-collapse sched-sheet" style={{ minWidth: 1400 }}>
+        <table className="text-xs border-collapse sched-sheet" style={{ minWidth: 1000 }}>
           <thead>
             <tr>
               <th className="sheet-th" style={{ minWidth: 38, width: 38 }}>#</th>
-              <th className="sheet-th sheet-th-sticky" style={{ minWidth: 130 }}>Therapist</th>
-              <th className="sheet-th" style={{ minWidth: 80 }}>Day</th>
+              <th className="sheet-th sheet-th-sticky" style={{ minWidth: 110 }}>Therapist</th>
+              <th className="sheet-th" style={{ minWidth: 64 }}>Day</th>
               {TIME_SLOTS.map(ts => (
-                <th key={ts} className="sheet-th" style={{ minWidth: 110 }}>
+                <th key={ts} className="sheet-th" style={{ minWidth: 78 }}>
                   {ts.replace(' AM', 'a').replace(' PM', 'p').replace(' - ', '–')}
                 </th>
               ))}
@@ -384,6 +414,17 @@ export default function Schedule() {
         <span className="ml-auto text-[11px]" style={{ color: "#8B9E7A" }}>Each child = unique color · {clients.length} clients</span>
       </div>
 
+      {clipboard && isAdmin && (
+        <div className="card p-3 mb-4 flex items-center gap-3 text-sm" style={{ background: "#FFF7E1", borderColor: "#E8C572" }} data-testid="clipboard-banner">
+          <Copy size={18} weight="duotone" style={{ color: "#8B6918" }} />
+          <div className="flex-1">
+            <div className="font-bold" style={{ color: "#6B5218" }}>📋 Cell copied — click any empty slot to paste</div>
+            <div className="text-xs" style={{ color: "#8B6918" }}>{clipboard.service_code}{clipboard.child_name && ` | ${clipboard.child_name}`}{clipboard.custom_time && ` (${clipboard.custom_time})`} {clipboard.duration > 1 && `· ${clipboard.duration}h`}</div>
+          </div>
+          <button onClick={() => setClipboard(null)} className="btn btn-ghost p-1.5"><X size={16} /></button>
+        </div>
+      )}
+
       {isAdmin && (view === "blocks" || view === "sheet") && (
         <div className="relative max-w-sm mb-5">
           <MagnifyingGlass size={18} className="absolute top-3 left-3" style={{ color: "#8B9E7A" }} />
@@ -494,7 +535,8 @@ export default function Schedule() {
       {ctxMenu && (
         <div className="fixed card p-1 z-50 min-w-48" style={{ top: ctxMenu.y, left: ctxMenu.x }} onClick={e => e.stopPropagation()}>
           <button onClick={() => { handleCellClick(null, ctxMenu.cell.therapist_id, ctxMenu.cell.day, ctxMenu.cell.time_slot, ctxMenu.cell); setCtxMenu(null); }} className="btn btn-ghost w-full justify-start text-sm">Edit</button>
-          <button onClick={() => { duplicate(ctxMenu.cell.id); setCtxMenu(null); }} className="btn btn-ghost w-full justify-start text-sm"><Copy size={14} /> Duplicate</button>
+          <button data-testid="copy-cell-btn" onClick={() => { copyCell(ctxMenu.cell); setCtxMenu(null); }} className="btn btn-ghost w-full justify-start text-sm" style={{ color: "#7A8A6A" }}><Copy size={14} weight="duotone" /> Copy cell</button>
+          <button onClick={() => { duplicate(ctxMenu.cell.id); setCtxMenu(null); }} className="btn btn-ghost w-full justify-start text-sm">Duplicate (next slot)</button>
           <div className="divider my-1" />
           <button onClick={() => setState(ctxMenu.cell, "cancel_child")} className="btn btn-ghost w-full justify-start text-sm" style={{ color: "#8B3A55" }}>🩷 Mark Client Cancel</button>
           <button onClick={() => setState(ctxMenu.cell, "cancel_therapist")} className="btn btn-ghost w-full justify-start text-sm" style={{ color: "#8B6918" }}>🟡 Mark Therapist Cancel</button>
