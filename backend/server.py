@@ -125,6 +125,9 @@ class ClientIn(BaseModel):
     parent_name: Optional[str] = None
     parent_phone: Optional[str] = None
     package_hours: Optional[float] = 24
+    billing_mode: Optional[str] = "hours"   # "hours" (count by hours used) or "weeks" (4-week school cycle)
+    cycle_weeks: Optional[int] = 4           # for billing_mode="weeks"
+    cycle_start_date: Optional[str] = None   # ISO yyyy-mm-dd; first day of current billing cycle
     notes: Optional[str] = None
     main_therapist_id: Optional[str] = None
     co_therapist_ids: Optional[List[str]] = []
@@ -617,6 +620,68 @@ async def create_resource(payload: ResourceIn, _=Depends(admin_only)):
 async def update_resource(rid: str, payload: ResourceIn, _=Depends(admin_only)):
     await db.resources.update_one({"id": rid}, {"$set": payload.model_dump()})
     return await db.resources.find_one({"id": rid}, {"_id": 0})
+
+@api.get("/clients/{cid}/billing-progress")
+async def client_billing_progress(cid: str, user=Depends(get_current_user)):
+    """Returns billing progress: hours-based or weeks-based.
+    weeks-based: counts distinct weeks (Sun-Thu) where at least 1 Completed session exists,
+                 since cycle_start_date; cycle ends when weeks_completed >= cycle_weeks.
+    """
+    client = await db.clients.find_one({"id": cid}, {"_id": 0})
+    if not client:
+        raise HTTPException(status_code=404, detail="Not found")
+    sessions = await db.sessions.find({"client_id": cid}, {"_id": 0}).to_list(2000)
+    completed = [s for s in sessions if s.get("status") == "Completed"]
+    mode = client.get("billing_mode") or "hours"
+    if mode == "hours":
+        used_h = sum(float(s.get("hours") or 0) for s in completed)
+        pkg = float(client.get("package_hours") or 24)
+        return {
+            "mode": "hours", "used": round(used_h, 1), "package": pkg,
+            "remaining": max(0.0, round(pkg - used_h, 1)),
+            "percent": min(100, round((used_h / pkg) * 100)) if pkg else 0,
+        }
+    # weeks-based
+    cycle_weeks = int(client.get("cycle_weeks") or 4)
+    start_iso = client.get("cycle_start_date")
+    if not start_iso:
+        # fallback to earliest completed session
+        if completed:
+            start_iso = min(s.get("session_date") or "9999" for s in completed)
+        else:
+            start_iso = datetime.now(timezone.utc).date().isoformat()
+    try:
+        start_d = datetime.fromisoformat(start_iso).date()
+    except Exception:
+        start_d = datetime.now(timezone.utc).date()
+    # Snap to Sunday on/before
+    while start_d.weekday() != 6:
+        start_d = start_d - timedelta(days=1)
+    # Determine completed weeks: each week where >=1 Completed session falls in [start+7k, start+7k+5)
+    weeks_done = 0
+    week_breakdown = []
+    for k in range(cycle_weeks):
+        week_start = start_d + timedelta(days=7 * k)
+        week_end = week_start + timedelta(days=5)  # Sun-Fri exclusive
+        in_week = [s for s in completed if s.get("session_date") and week_start.isoformat() <= s.get("session_date") < week_end.isoformat()]
+        has = len(in_week) > 0
+        if has: weeks_done += 1
+        week_breakdown.append({
+            "week_number": k + 1,
+            "week_start": week_start.isoformat(),
+            "sessions": len(in_week),
+            "completed": has,
+        })
+    return {
+        "mode": "weeks",
+        "weeks_completed": weeks_done,
+        "cycle_weeks": cycle_weeks,
+        "cycle_start_date": start_d.isoformat(),
+        "next_cycle_start": (start_d + timedelta(days=7 * cycle_weeks)).isoformat(),
+        "remaining_weeks": max(0, cycle_weeks - weeks_done),
+        "percent": round((weeks_done / cycle_weeks) * 100) if cycle_weeks else 0,
+        "weeks": week_breakdown,
+    }
 
 @api.get("/clients/{cid}/sessions/export")
 async def export_sessions_excel(cid: str, user=Depends(get_current_user)):

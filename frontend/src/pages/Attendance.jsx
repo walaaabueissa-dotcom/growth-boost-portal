@@ -49,10 +49,29 @@ export default function Attendance() {
   useEffect(() => { load(); }, [load]);
 
   const enriched = useMemo(() => clients.map(c => {
+    if (c.billing_mode === "weeks") {
+      // Weeks-based: compute completed weeks in current cycle
+      const cycleWeeks = c.cycle_weeks || 4;
+      const cycleStart = c.cycle_start_date ? new Date(c.cycle_start_date) : null;
+      const completedSessions = sessions.filter(s => s.client_id === c.id && s.status === "Completed");
+      let weeksDone = 0;
+      if (cycleStart) {
+        for (let k = 0; k < cycleWeeks; k++) {
+          const ws = new Date(cycleStart); ws.setDate(ws.getDate() + 7 * k);
+          const we = new Date(ws); we.setDate(we.getDate() + 5);
+          const wsISO = ws.toISOString().slice(0,10);
+          const weISO = we.toISOString().slice(0,10);
+          if (completedSessions.some(s => s.session_date >= wsISO && s.session_date < weISO)) weeksDone++;
+        }
+      }
+      const pct = Math.round((weeksDone / cycleWeeks) * 100);
+      const status = pct >= 75 ? "urgent" : pct >= 50 ? "warning" : "ok";
+      return { ...c, billing_mode: "weeks", weeksDone, cycleWeeks, weeksRem: cycleWeeks - weeksDone, pct, status, used: 0, pkg: 0, rem: 0 };
+    }
     const used = getUsedHours(sessions, c.id);
     const pkg = c.package_hours || 24;
     const rem = Math.max(0, pkg - used);
-    return { ...c, used, pkg, rem, pct: Math.min(100, Math.round(used/pkg*100)), status: getStatus(used, pkg) };
+    return { ...c, billing_mode: "hours", used, pkg, rem, pct: Math.min(100, Math.round(used/pkg*100)), status: getStatus(used, pkg) };
   }), [clients, sessions]);
 
   const filtered = useMemo(() => {
@@ -123,7 +142,11 @@ export default function Attendance() {
                   <div className="flex-1 min-w-0">
                     <div className="font-bold text-lg" style={{color: "#2C3625"}}>{c.name} <span className="text-xs font-normal ml-1" style={{color: "#8B9E7A"}}>#{c.file_no}</span></div>
                     <div className="text-xs mt-0.5" style={{color: "#8B9E7A"}}>
-                      Pkg {c.pkg}h · Used {c.used.toFixed(1)}h · Main: {findT(c.main_therapist_id)?.name || "—"}
+                      {c.billing_mode === "weeks" ? (
+                        <>📅 Week {c.weeksDone}/{c.cycleWeeks} · {c.weeksRem} left</>
+                      ) : (
+                        <>Pkg {c.pkg}h · Used {c.used.toFixed(1)}h</>
+                      )} · Main: {findT(c.main_therapist_id)?.name || "—"}
                     </div>
                   </div>
                 </div>
@@ -134,7 +157,9 @@ export default function Attendance() {
                 <div className="flex-1 h-2 bg-[#F0EDE9] rounded-full overflow-hidden">
                   <div className="h-full rounded-full transition-all" style={{ width: `${c.pct}%`, background: fillColor }}/>
                 </div>
-                <span className="text-xs min-w-[80px] text-right font-bold" style={{color: "#5C6853"}}>{c.rem}/{c.pkg}h left</span>
+                <span className="text-xs min-w-[100px] text-right font-bold" style={{color: "#5C6853"}}>
+                  {c.billing_mode === "weeks" ? `${c.weeksRem}/${c.cycleWeeks} weeks left` : `${c.rem}/${c.pkg}h left`}
+                </span>
               </div>
 
               <div className="flex gap-2 flex-wrap">

@@ -56,7 +56,14 @@ export default function Clients() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="font-bold text-lg truncate" style={{color: "#2C3625"}}>{c.name}</div>
-                  <div className="text-xs flex items-center gap-1" style={{color: "#8B9E7A"}}><Hash size={10}/>{c.file_no || "—"} · Pkg {c.package_hours || 24}h</div>
+                  <div className="text-xs flex items-center gap-1 flex-wrap" style={{color: "#8B9E7A"}}>
+                    <Hash size={10}/>{c.file_no || "—"}
+                    {c.billing_mode === "weeks" ? (
+                      <span className="pill text-[9px] px-1.5 py-0.5" style={{background:"#FAF0D1", color:"#6B5218"}}>📅 {c.cycle_weeks || 4}-week cycle</span>
+                    ) : (
+                      <span>· Pkg {c.package_hours || 24}h</span>
+                    )}
+                  </div>
                 </div>
                 {isAdmin && (
                   <div className="flex flex-col gap-1">
@@ -100,7 +107,20 @@ export default function Clients() {
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2"><label className="label">Full Name</label><input data-testid="client-name-input" className="input" required value={edit.name} onChange={e=>setEdit({...edit, name: e.target.value})}/></div>
               <div><label className="label">File #</label><input className="input" value={edit.file_no || ""} onChange={e=>setEdit({...edit, file_no: e.target.value})} placeholder="009"/></div>
-              <div><label className="label">Package (hours)</label><input type="number" className="input" value={edit.package_hours || 24} onChange={e=>setEdit({...edit, package_hours: parseFloat(e.target.value) || 24})}/></div>
+              <div><label className="label">Billing Mode</label>
+                <select className="select" value={edit.billing_mode || "hours"} onChange={e=>setEdit({...edit, billing_mode: e.target.value})} data-testid="billing-mode-select">
+                  <option value="hours">Hours-based (Home Sessions)</option>
+                  <option value="weeks">Weeks-based (School Service · 4-week cycle)</option>
+                </select>
+              </div>
+              {(edit.billing_mode || "hours") === "hours" ? (
+                <div><label className="label">Package (hours)</label><input type="number" className="input" value={edit.package_hours || 24} onChange={e=>setEdit({...edit, package_hours: parseFloat(e.target.value) || 24})}/></div>
+              ) : (
+                <>
+                  <div><label className="label">Cycle Length (weeks)</label><input type="number" min="1" max="12" className="input" value={edit.cycle_weeks || 4} onChange={e=>setEdit({...edit, cycle_weeks: parseInt(e.target.value) || 4})}/></div>
+                  <div className="col-span-2"><label className="label">Cycle Start Date (Sunday of first billing week)</label><input type="date" className="input" value={edit.cycle_start_date || ""} onChange={e=>setEdit({...edit, cycle_start_date: e.target.value})}/></div>
+                </>
+              )}
               <div>
                 <label className="label">Color</label>
                 <div className="flex items-center gap-2"><input type="color" value={edit.color || "#A2C4C9"} onChange={e=>setEdit({...edit, color: e.target.value})} className="w-10 h-10 rounded-lg border border-[#E8E4DE]"/><span className="text-xs" style={{color: "#8B9E7A"}}>{edit.color}</span></div>
